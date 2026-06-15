@@ -34,7 +34,7 @@ enum SampleSource: String, Codable, CaseIterable, Identifiable {
 // e.g. a laptop with no GPU fan has `fanRPMs == []`, and a sensor can
 // transiently fail to read.
 
-struct Sample: Equatable {
+struct Sample: Equatable, Identifiable {
     var timestamp: Date
     var cpuTempC:  Double?
     var gpuTempC:  Double?
@@ -44,6 +44,13 @@ struct Sample: Equatable {
     var cpuPState: [Int]
     var fanRPMs:   [Int]
     var source:    SampleSource = .real
+
+    /// Identifiable identity. Timestamps are unique per minute across the
+    /// sampler, and tagging with source lets real and synthetic rows from
+    /// the same minute coexist in the database (the dashboard only ever
+    /// renders one at a time, but the uniqueness property keeps SwiftUI's
+    /// `ForEach` happy).
+    var id: String { "\(Int(timestamp.timeIntervalSince1970))-\(source.rawValue)" }
 
     /// Convenience: aggregate fan RPMs into a single max value for charting.
     /// (We use max rather than mean because thermal alerts should react to

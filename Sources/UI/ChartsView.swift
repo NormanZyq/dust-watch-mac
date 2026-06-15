@@ -13,6 +13,10 @@ import Charts
 //
 // This is the "I want to dig into the data" view. The Overview tab
 // gives the at-a-glance summary; this one is for forensics.
+//
+// Every chart here uses `InteractiveChart` for iOS-Health-style
+// hover: snap to nearest point, vertical guideline, per-series
+// dots, and a glass tooltip with formatted values.
 
 struct ChartsView: View {
     enum Mode: String, CaseIterable, Identifiable {
@@ -62,6 +66,14 @@ struct ChartsView: View {
     @State private var exportError: String?
     @State private var exportedURL: URL?
 
+    /// Dashboard-wide series visibility. Stored in UserDefaults so toggles
+    /// survive tab switches and the next app launch.
+    @AppStorage("dashboard.series.showCPUTemp") private var showCPUTemp = true
+    @AppStorage("dashboard.series.showGPUTemp") private var showGPUTemp = true
+    @AppStorage("dashboard.series.showFanRPM")  private var showFanRPM = true
+    @AppStorage("dashboard.series.showCPULoad") private var showCPULoad = true
+    @AppStorage("dashboard.series.showGPULoad") private var showGPULoad = true
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
@@ -102,11 +114,11 @@ struct ChartsView: View {
     private var subtitle: String {
         switch mode {
         case .live:
-            return "Raw 1-minute samples from the last 24 hours."
+            return "Raw 1-minute samples from the last 24 hours. Hover for CPU/GPU/Fan values."
         case .compare:
-            return "Median CPU temperature at the most-degraded P-State, recent vs baseline."
+            return "Median CPU temperature at the most-degraded P-State, recent vs baseline. Hover bars for detail."
         case .history:
-            return "Explore the full range of recorded data. Pick a time range, an aggregation level, and click a point for details."
+            return "Explore the full range of recorded data. Pick a time range, an aggregation level, and hover for point values."
         }
     }
 
@@ -154,29 +166,99 @@ struct ChartsView: View {
     //
     // The actual chart area. Switches between raw line chart, hourly
     // bars, and daily bars based on the mode and aggregation choice.
+    // For modes that have toggleable series, a `SeriesToggleBar` is
+    // rendered at the top of the card.
 
     @ViewBuilder
     private var chartCard: some View {
-        Group {
-            if loading && samples.isEmpty && hourly.isEmpty && daily.isEmpty {
-                ProgressView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if isEmpty {
-                ContentUnavailableViewCompat(
-                    title: "No data in this range",
-                    systemImage: "tray",
-                    description: "Pick a wider time range, or wait for the sampler to collect more."
-                )
-            } else {
-                switch mode {
-                case .live:    liveChart
-                case .compare: compareChart
-                case .history: historyChart
+        VStack(alignment: .leading, spacing: 10) {
+            if shouldShowToggleBar {
+                HStack {
+                    Text("Series")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    SeriesToggleBar(
+                        config: seriesConfigBinding,
+                        available: availableToggleKinds
+                    )
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.top, 10)
+            }
+            Group {
+                if loading && samples.isEmpty && hourly.isEmpty && daily.isEmpty {
+                    ProgressView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if isEmpty {
+                    ContentUnavailableViewCompat(
+                        title: "No data in this range",
+                        systemImage: "tray",
+                        description: "Pick a wider time range, or wait for the sampler to collect more."
+                    )
+                } else {
+                    switch mode {
+                    case .live:    liveChart
+                    case .compare: compareChart
+                    case .history: historyChart
+                    }
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(NSColor.windowBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    /// Only show the series toggle bar for chart views that have
+    /// multiple plottable series. Compare has just two bars, so it
+    /// does not need toggling.
+    private var shouldShowToggleBar: Bool {
+        switch (mode, aggregation) {
+        case (.live, _):              return true
+        case (.history, .raw):        return true
+        case (.history, .hourly):     return true
+        case (.history, .daily):      return true
+        case (.compare, _):           return false
+        }
+    }
+
+    /// Which toggles to show for the current chart. Live and
+    /// History-raw have all five series (raw samples carry load
+    /// data); History-hourly only has temp + fan (no load in the
+    /// rollup).
+    private var availableToggleKinds: Set<SeriesKind> {
+        switch (mode, aggregation) {
+        case (.live, _),
+             (.history, .raw):
+            return [.cpuTemp, .gpuTemp, .fanRPM, .cpuLoad, .gpuLoad]
+        case (.history, .hourly),
+             (.history, .daily):
+            return [.cpuTemp, .gpuTemp, .fanRPM]
+        default:
+            return []
+        }
+    }
+
+    private var seriesConfig: ChartSeriesConfig {
+        ChartSeriesConfig(
+            showCPUTemp: showCPUTemp,
+            showGPUTemp: showGPUTemp,
+            showFanRPM: showFanRPM,
+            showCPULoad: showCPULoad,
+            showGPULoad: showGPULoad
+        )
+    }
+
+    private var seriesConfigBinding: Binding<ChartSeriesConfig> {
+        Binding {
+            seriesConfig
+        } set: { newValue in
+            showCPUTemp = newValue.showCPUTemp
+            showGPUTemp = newValue.showGPUTemp
+            showFanRPM = newValue.showFanRPM
+            showCPULoad = newValue.showCPULoad
+            showGPULoad = newValue.showGPULoad
+        }
     }
 
     private var isEmpty: Bool {
@@ -190,43 +272,175 @@ struct ChartsView: View {
     }
 
     // MARK: - Live chart (24h raw samples)
+    //
+    // Dual-axis: CPU/GPU temperature on the left axis (°C), fan
+    // RPM on the right axis. Both series are normalized to a shared
+    // 0–100 internal scale so they share the plot area; the axis
+    // labels restore the real units. Hover shows every series'
+    // value at that minute plus the fan RPM if the sample had one.
 
     private var liveChart: some View {
-        let cpuSeries: [ChartPoint] = samples.compactMap { s in
-            guard let v = s.cpuTempC else { return nil }
-            return ChartPoint(time: s.timestamp, value: v, series: "CPU")
-        }
-        let gpuSeries: [ChartPoint] = samples.compactMap { s in
-            guard let v = s.gpuTempC else { return nil }
-            return ChartPoint(time: s.timestamp, value: v, series: "GPU")
-        }
-        return Chart {
-            ForEach(cpuSeries) { p in
-                LineMark(x: .value("Time", p.time), y: .value("°C", p.value), series: .value("Series", p.series))
-                    .foregroundStyle(.orange)
-                    .interpolationMethod(.monotone)
-            }
-            ForEach(gpuSeries) { p in
-                LineMark(x: .value("Time", p.time), y: .value("°C", p.value), series: .value("Series", p.series))
-                    .foregroundStyle(.blue)
-                    .interpolationMethod(.monotone)
-            }
-            RuleMark(y: .value("Warning", 75))
-                .foregroundStyle(.red.opacity(0.5))
-                .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                .annotation(position: .top, alignment: .leading) {
-                    Text("75°C").font(.caption2).foregroundStyle(.red)
+        let rpmMax: Double = max(
+            4800,
+            (samples.compactMap { $0.maxFanRPM.map { Double($0) } }.max() ?? 0) * 1.15
+        )
+        return DualAxisChart(
+            data: samples,
+            dateKey: \.timestamp,
+            rowsForPoint: { liveRows($0, rpmMax: rpmMax) },
+            dateLabel: liveDateLabel,
+            primaryAxisLabel: "°C / %",
+            primaryMax: 100,
+            secondaryAxisLabel: "RPM",
+            secondaryMax: rpmMax
+        ) {
+            // CPU line + soft min-max band (only when CPU temp is on)
+            if seriesConfig.showCPUTemp {
+                ForEach(samples) { s in
+                    if let lo = s.cpuTempC, let hi = s.cpuTempC, hi > lo + 0.5 {
+                        AreaMark(
+                            x: .value("Time", s.timestamp),
+                            yStart: .value("Min", lo - 0.5),
+                            yEnd: .value("Max", hi + 0.5)
+                        )
+                        .foregroundStyle(Color.orange.opacity(0.08))
+                        .interpolationMethod(.monotone)
+                    }
                 }
+                ForEach(samples) { s in
+                    if let v = s.cpuTempC {
+                        LineMark(
+                            x: .value("Time", s.timestamp),
+                            y: .value("°C", v),
+                            series: .value("Series", "CPU")
+                        )
+                        .foregroundStyle(.orange)
+                        .interpolationMethod(.monotone)
+                        .lineStyle(StrokeStyle(lineWidth: 1.6))
+                    }
+                }
+            }
+
+            if seriesConfig.showGPUTemp {
+                ForEach(samples) { s in
+                    if let v = s.gpuTempC {
+                        LineMark(
+                            x: .value("Time", s.timestamp),
+                            y: .value("°C", v),
+                            series: .value("Series", "GPU")
+                        )
+                        .foregroundStyle(.blue)
+                        .interpolationMethod(.monotone)
+                        .lineStyle(StrokeStyle(lineWidth: 1.6))
+                    }
+                }
+            }
+
+            if seriesConfig.showFanRPM {
+                ForEach(samples) { s in
+                    if let rpm = s.maxFanRPM.map({ Double($0) }) {
+                        LineMark(
+                            x: .value("Time", s.timestamp),
+                            y: .value("RPM-norm", rpm / rpmMax * 100),
+                            series: .value("Series", "Fan")
+                        )
+                        .foregroundStyle(.green)
+                        .interpolationMethod(.monotone)
+                        .lineStyle(StrokeStyle(lineWidth: 1.2, dash: [3, 2]))
+                    }
+                }
+            }
+
+            if seriesConfig.showCPULoad {
+                ForEach(samples) { s in
+                    if let load = s.cpuLoad {
+                        LineMark(
+                            x: .value("Time", s.timestamp),
+                            y: .value("%", load * 100),
+                            series: .value("Series", "CPU load")
+                        )
+                        .foregroundStyle(Color.orange.opacity(0.55))
+                        .interpolationMethod(.monotone)
+                        .lineStyle(StrokeStyle(lineWidth: 1.1, dash: [2, 3]))
+                    }
+                }
+            }
+
+            if seriesConfig.showGPULoad {
+                ForEach(samples) { s in
+                    if let load = s.gpuLoad {
+                        LineMark(
+                            x: .value("Time", s.timestamp),
+                            y: .value("%", load * 100),
+                            series: .value("Series", "GPU load")
+                        )
+                        .foregroundStyle(Color.blue.opacity(0.55))
+                        .interpolationMethod(.monotone)
+                        .lineStyle(StrokeStyle(lineWidth: 1.1, dash: [2, 3]))
+                    }
+                }
+            }
+
+            if seriesConfig.showCPUTemp {
+                RuleMark(y: .value("Warning", 75))
+                    .foregroundStyle(.red.opacity(0.5))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                    .annotation(position: .top, alignment: .leading) {
+                        Text("75°C").font(.caption2).foregroundStyle(.red.opacity(0.8))
+                    }
+            }
         }
-        .chartXAxis { AxisMarks(values: .automatic(desiredCount: 6)) }
-        .chartYAxis { AxisMarks(position: .leading) }
         .chartLegend(position: .top, alignment: .leading)
+        .chartXAxis { AxisMarks(values: .automatic(desiredCount: 6)) }
         .padding(12)
+    }
+
+    /// Tooltip rows for the Live chart. Each row is only included
+    /// when its series is enabled.
+    private func liveRows(_ s: Sample, rpmMax: Double) -> [HoverRow] {
+        var rows: [HoverRow] = []
+        if seriesConfig.showCPUTemp {
+            rows.append(HoverRow(label: "CPU temp", color: .orange, value: s.cpuTempC))
+        }
+        if seriesConfig.showGPUTemp {
+            rows.append(HoverRow(label: "GPU temp", color: .blue, value: s.gpuTempC))
+        }
+        if seriesConfig.showFanRPM {
+            rows.append(HoverRow(
+                label: "Fan RPM",
+                color: .green,
+                plotValue: s.maxFanRPM.map { Double($0) / rpmMax * 100 },
+                displayValue: s.maxFanRPM.map { Double($0) },
+                unit: " RPM",
+                fractionDigits: 0
+            ))
+        }
+        if seriesConfig.showCPULoad {
+            rows.append(HoverRow(label: "CPU load", color: .orange.opacity(0.6),
+                                 value: s.cpuLoad.map { $0 * 100 },
+                                 unit: "%", fractionDigits: 0))
+        }
+        if seriesConfig.showGPULoad {
+            rows.append(HoverRow(label: "GPU load", color: .blue.opacity(0.6),
+                                 value: s.gpuLoad.map { $0 * 100 },
+                                 unit: "%", fractionDigits: 0))
+        }
+        return rows
+    }
+
+    private func liveDateLabel(_ s: Sample) -> (header: String, sub: String?) {
+        let f1 = DateFormatter()
+        f1.dateFormat = "EEE  MMM d"
+        let f2 = DateFormatter()
+        f2.dateFormat = "HH:mm"
+        return (f1.string(from: s.timestamp), f2.string(from: s.timestamp))
     }
 
     // MARK: - Compare chart
     //
-    // Bar chart of baseline vs recent median at the worst P-State.
+    // Baseline vs recent bars. Hover any bar to see n (sample
+    // count) and median ± spread in the tooltip, plus the p-value
+    // and delta that drove the alert.
 
     private var compareChart: some View {
         let f = finding
@@ -239,6 +453,7 @@ struct ChartsView: View {
             .annotation(position: .top) {
                 Text(String(format: "%.1f°C", f?.baselineMedian ?? 0))
                     .font(.caption2)
+                    .monospacedDigit()
             }
             BarMark(
                 x: .value("Window", "Recent"),
@@ -248,6 +463,7 @@ struct ChartsView: View {
             .annotation(position: .top) {
                 Text(String(format: "%.1f°C", f?.recentMedian ?? 0))
                     .font(.caption2)
+                    .monospacedDigit()
             }
         }
         .chartYAxis { AxisMarks(position: .leading) }
@@ -288,71 +504,321 @@ struct ChartsView: View {
     }
 
     private var historyRawChart: some View {
-        let cpuSeries: [ChartPoint] = samples.compactMap { s in
-            guard let v = s.cpuTempC else { return nil }
-            return ChartPoint(time: s.timestamp, value: v, series: "CPU")
-        }
-        let gpuSeries: [ChartPoint] = samples.compactMap { s in
-            guard let v = s.gpuTempC else { return nil }
-            return ChartPoint(time: s.timestamp, value: v, series: "GPU")
-        }
-        return Chart {
-            ForEach(cpuSeries) { p in
-                LineMark(x: .value("Time", p.time), y: .value("°C", p.value), series: .value("Series", p.series))
-                    .foregroundStyle(.orange)
-                    .interpolationMethod(.monotone)
+        let rpmMax: Double = max(
+            4800,
+            (samples.compactMap { $0.maxFanRPM.map { Double($0) } }.max() ?? 0) * 1.15
+        )
+        return DualAxisChart(
+            data: samples,
+            dateKey: \.timestamp,
+            rowsForPoint: { liveRows($0, rpmMax: rpmMax) },
+            dateLabel: liveDateLabel,
+            primaryAxisLabel: "°C / %",
+            primaryMax: 100,
+            secondaryAxisLabel: "RPM",
+            secondaryMax: rpmMax
+        ) {
+            if seriesConfig.showCPUTemp {
+                ForEach(samples) { s in
+                    if let v = s.cpuTempC {
+                        LineMark(
+                            x: .value("Time", s.timestamp),
+                            y: .value("°C", v),
+                            series: .value("Series", "CPU")
+                        )
+                        .foregroundStyle(.orange)
+                        .interpolationMethod(.monotone)
+                        .lineStyle(StrokeStyle(lineWidth: 1.4))
+                    }
+                }
             }
-            ForEach(gpuSeries) { p in
-                LineMark(x: .value("Time", p.time), y: .value("°C", p.value), series: .value("Series", p.series))
-                    .foregroundStyle(.blue)
-                    .interpolationMethod(.monotone)
+            if seriesConfig.showGPUTemp {
+                ForEach(samples) { s in
+                    if let v = s.gpuTempC {
+                        LineMark(
+                            x: .value("Time", s.timestamp),
+                            y: .value("°C", v),
+                            series: .value("Series", "GPU")
+                        )
+                        .foregroundStyle(.blue)
+                        .interpolationMethod(.monotone)
+                        .lineStyle(StrokeStyle(lineWidth: 1.4))
+                    }
+                }
             }
-            RuleMark(y: .value("Warning", 75))
-                .foregroundStyle(.red.opacity(0.4))
-                .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+            if seriesConfig.showFanRPM {
+                ForEach(samples) { s in
+                    if let rpm = s.maxFanRPM.map({ Double($0) }) {
+                        LineMark(
+                            x: .value("Time", s.timestamp),
+                            y: .value("RPM-norm", rpm / rpmMax * 100),
+                            series: .value("Series", "Fan")
+                        )
+                        .foregroundStyle(.green)
+                        .interpolationMethod(.monotone)
+                        .lineStyle(StrokeStyle(lineWidth: 1.0, dash: [3, 2]))
+                    }
+                }
+            }
+            if seriesConfig.showCPULoad {
+                ForEach(samples) { s in
+                    if let load = s.cpuLoad {
+                        LineMark(
+                            x: .value("Time", s.timestamp),
+                            y: .value("%", load * 100),
+                            series: .value("Series", "CPU load")
+                        )
+                        .foregroundStyle(Color.orange.opacity(0.55))
+                        .interpolationMethod(.monotone)
+                        .lineStyle(StrokeStyle(lineWidth: 1.0, dash: [2, 3]))
+                    }
+                }
+            }
+            if seriesConfig.showGPULoad {
+                ForEach(samples) { s in
+                    if let load = s.gpuLoad {
+                        LineMark(
+                            x: .value("Time", s.timestamp),
+                            y: .value("%", load * 100),
+                            series: .value("Series", "GPU load")
+                        )
+                        .foregroundStyle(Color.blue.opacity(0.55))
+                        .interpolationMethod(.monotone)
+                        .lineStyle(StrokeStyle(lineWidth: 1.0, dash: [2, 3]))
+                    }
+                }
+            }
+            if seriesConfig.showCPUTemp {
+                RuleMark(y: .value("Warning", 75))
+                    .foregroundStyle(.red.opacity(0.4))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+            }
         }
         .chartXAxis { AxisMarks(values: .automatic(desiredCount: 8)) }
-        .chartYAxis { AxisMarks(position: .leading) }
         .chartLegend(position: .top, alignment: .leading)
         .padding(12)
     }
 
     private var historyHourlyChart: some View {
-        Chart {
-            ForEach(hourly) { h in
-                if let v = h.cpuTempAvg {
-                    LineMark(x: .value("Hour", h.hour), y: .value("°C", v), series: .value("Series", "CPU avg"))
+        let rpmMax: Double = max(
+            4800,
+            (hourly.compactMap { $0.fanRpmPeak.map { Double($0) } }.max() ?? 0) * 1.15
+        )
+        return DualAxisChart(
+            data: hourly,
+            dateKey: \.hour,
+            rowsForPoint: { h in
+                var rows: [HoverRow] = []
+                if seriesConfig.showCPUTemp {
+                    rows.append(HoverRow(label: "CPU peak", color: .orange, value: h.cpuTempPeak))
+                    rows.append(HoverRow(label: "CPU avg",  color: .orange.opacity(0.85), value: h.cpuTempAvg))
+                    rows.append(HoverRow(label: "CPU min",  color: .orange.opacity(0.55), value: h.cpuTempMin))
+                }
+                if seriesConfig.showGPUTemp {
+                    rows.append(HoverRow(label: "GPU peak", color: .blue, value: h.gpuTempPeak))
+                }
+                if seriesConfig.showFanRPM {
+                    rows.append(HoverRow(
+                        label: "Fan RPM",
+                        color: .green,
+                        plotValue: h.fanRpmPeak.map { Double($0) / rpmMax * 100 },
+                        displayValue: h.fanRpmPeak.map { Double($0) },
+                        unit: " RPM",
+                        fractionDigits: 0
+                    ))
+                }
+                return rows
+            },
+            dateLabel: { h in
+                let f = DateFormatter()
+                f.dateFormat = "EEE  MMM d  HH:00"
+                return (f.string(from: h.hour), nil)
+            },
+            primaryAxisLabel: "°C",
+            primaryMax: 100,
+            secondaryAxisLabel: "RPM",
+            secondaryMax: rpmMax
+        ) {
+            if seriesConfig.showCPUTemp {
+                ForEach(hourly) { h in
+                    if let lo = h.cpuTempMin, let hi = h.cpuTempPeak, hi > lo {
+                        AreaMark(
+                            x: .value("Hour", h.hour),
+                            yStart: .value("Min", lo),
+                            yEnd: .value("Max", hi)
+                        )
+                        .foregroundStyle(LinearGradient(
+                            colors: [
+                                Color.orange.opacity(0.22),
+                                Color.orange.opacity(0.05),
+                            ],
+                            startPoint: .top, endPoint: .bottom
+                        ))
+                        .interpolationMethod(.monotone)
+                    }
+                }
+                ForEach(hourly) { h in
+                    if let v = h.cpuTempAvg {
+                        LineMark(
+                            x: .value("Hour", h.hour),
+                            y: .value("°C", v),
+                            series: .value("Series", "CPU avg")
+                        )
                         .foregroundStyle(.orange)
                         .interpolationMethod(.monotone)
-                }
-                if let v = h.gpuTempAvg {
-                    LineMark(x: .value("Hour", h.hour), y: .value("°C", v), series: .value("Series", "GPU avg"))
-                        .foregroundStyle(.blue)
-                        .interpolationMethod(.monotone)
+                        .lineStyle(StrokeStyle(lineWidth: 2.0))
+                    }
                 }
             }
-            RuleMark(y: .value("Warning", 75))
-                .foregroundStyle(.red.opacity(0.4))
-                .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+            if seriesConfig.showGPUTemp {
+                ForEach(hourly) { h in
+                    if let v = h.gpuTempAvg {
+                        LineMark(
+                            x: .value("Hour", h.hour),
+                            y: .value("°C", v),
+                            series: .value("Series", "GPU avg")
+                        )
+                        .foregroundStyle(.blue)
+                        .interpolationMethod(.monotone)
+                        .lineStyle(StrokeStyle(lineWidth: 2.0))
+                    }
+                }
+            }
+            if seriesConfig.showFanRPM {
+                ForEach(hourly) { h in
+                    if let rpm = h.fanRpmPeak.map({ Double($0) }) {
+                        LineMark(
+                            x: .value("Hour", h.hour),
+                            y: .value("RPM-norm", rpm / rpmMax * 100),
+                            series: .value("Series", "Fan")
+                        )
+                        .foregroundStyle(.green)
+                        .interpolationMethod(.monotone)
+                        .lineStyle(StrokeStyle(lineWidth: 1.4, dash: [4, 2]))
+                    }
+                }
+            }
+            if seriesConfig.showCPUTemp {
+                RuleMark(y: .value("Warning", 75))
+                    .foregroundStyle(.red.opacity(0.4))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+            }
         }
         .chartXAxis { AxisMarks(values: .automatic(desiredCount: 8)) }
-        .chartYAxis { AxisMarks(position: .leading) }
         .chartLegend(position: .top, alignment: .leading)
         .padding(12)
     }
 
     private var historyDailyChart: some View {
-        Chart {
-            ForEach(daily) { d in
-                if let v = d.cpuTempPeak {
-                    BarMark(x: .value("Day", d.date, unit: .day), y: .value("°C", v))
-                        .foregroundStyle(HeatPalette.color(forPeak: v))
-                        .cornerRadius(2)
+        let rpmMax: Double = max(
+            4800,
+            (daily.compactMap { $0.fanRpmPeak.map { Double($0) } }.max() ?? 0) * 1.15
+        )
+        return DualAxisChart(
+            data: daily,
+            dateKey: \.date,
+            rowsForPoint: { d in
+                var rows: [HoverRow] = []
+                if seriesConfig.showCPUTemp {
+                    rows.append(HoverRow(label: "CPU peak", color: .orange, value: d.cpuTempPeak))
+                    rows.append(HoverRow(label: "CPU avg",  color: .orange.opacity(0.85), value: d.cpuTempAvg))
+                    rows.append(HoverRow(label: "CPU min",  color: .orange.opacity(0.55), value: d.cpuTempMin))
+                }
+                if seriesConfig.showGPUTemp {
+                    rows.append(HoverRow(label: "GPU peak", color: .blue, value: d.gpuTempPeak))
+                    rows.append(HoverRow(label: "GPU avg", color: .blue.opacity(0.75), value: d.gpuTempAvg))
+                }
+                if seriesConfig.showFanRPM {
+                    rows.append(HoverRow(
+                        label: "Fan peak",
+                        color: .green,
+                        plotValue: d.fanRpmPeak.map { Double($0) / rpmMax * 100 },
+                        displayValue: d.fanRpmPeak.map { Double($0) },
+                        unit: " RPM",
+                        fractionDigits: 0
+                    ))
+                }
+                rows.append(HoverRow(
+                    label: "Samples",
+                    color: .secondary,
+                    plotValue: nil,
+                    displayValue: Double(d.sampleCount),
+                    fractionDigits: 0
+                ))
+                return rows
+            },
+            dateLabel: { d in
+                let f = DateFormatter()
+                f.dateFormat = "EEE  MMM d"
+                return (f.string(from: d.date), nil)
+            },
+            primaryAxisLabel: "°C",
+            primaryMax: 100,
+            secondaryAxisLabel: "RPM",
+            secondaryMax: rpmMax
+        ) {
+            // Whisker bars (min → peak)
+            if seriesConfig.showCPUTemp {
+                ForEach(daily) { d in
+                    if let lo = d.cpuTempMin, let hi = d.cpuTempPeak, hi > lo {
+                        BarMark(
+                            x: .value("Day", d.date, unit: .day),
+                            yStart: .value("Min", lo),
+                            yEnd: .value("Peak", hi),
+                            width: .ratio(0.16)
+                        )
+                        .foregroundStyle(TempColor.forPeak(hi).opacity(0.55))
+                        .cornerRadius(1)
+                    }
                 }
             }
-            RuleMark(y: .value("Warning", 75))
-                .foregroundStyle(.red.opacity(0.4))
-                .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+            // Main peak bars
+            if seriesConfig.showCPUTemp {
+                ForEach(daily) { d in
+                    if let v = d.cpuTempPeak {
+                        BarMark(
+                            x: .value("Day", d.date, unit: .day),
+                            y: .value("°C", v),
+                            width: .ratio(0.5)
+                        )
+                        .foregroundStyle(TempColor.forPeak(v))
+                        .cornerRadius(2)
+                    }
+                }
+            }
+            if seriesConfig.showGPUTemp {
+                ForEach(daily) { d in
+                    if let v = d.gpuTempPeak {
+                        LineMark(
+                            x: .value("Day", d.date),
+                            y: .value("°C", v),
+                            series: .value("Series", "GPU peak")
+                        )
+                        .foregroundStyle(.blue)
+                        .interpolationMethod(.monotone)
+                        .lineStyle(StrokeStyle(lineWidth: 1.6))
+                    }
+                }
+            }
+            if seriesConfig.showFanRPM {
+                ForEach(daily) { d in
+                    if let rpm = d.fanRpmPeak.map({ Double($0) }) {
+                        LineMark(
+                            x: .value("Day", d.date),
+                            y: .value("RPM-norm", rpm / rpmMax * 100),
+                            series: .value("Series", "Fan")
+                        )
+                        .foregroundStyle(.green)
+                        .interpolationMethod(.monotone)
+                        .lineStyle(StrokeStyle(lineWidth: 1.2, dash: [4, 2]))
+                    }
+                }
+            }
+            if seriesConfig.showCPUTemp {
+                RuleMark(y: .value("Warning", 75))
+                    .foregroundStyle(.red.opacity(0.4))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+            }
         }
         .chartXAxis {
             AxisMarks(values: .stride(by: .day)) { _ in
@@ -360,7 +826,7 @@ struct ChartsView: View {
                 AxisValueLabel(format: .dateTime.day().month(.abbreviated))
             }
         }
-        .chartYAxis { AxisMarks(position: .leading) }
+        .chartLegend(position: .top, alignment: .leading)
         .padding(12)
     }
 
@@ -448,6 +914,9 @@ struct ChartsView: View {
 // MARK: - ChartPoint
 //
 // Identifiable point for SwiftUI Charts ForEach.
+// (Kept for any future external code that constructs series of
+// raw time-stamped values; the new InteractiveChart can take any
+// Identifiable directly.)
 
 struct ChartPoint: Identifiable {
     let id = UUID()
