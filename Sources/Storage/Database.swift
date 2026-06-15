@@ -1,0 +1,681 @@
+import Foundation
+import SQLite3
+
+// MARK: - Database
+//
+// Thin Swift wrapper around the system sqlite3 library. We avoid any
+// third-party SQLite dependency (GRDB, SQLite.swift) to keep the build
+// simple and the binary small.
+//
+// Schema overview:
+//
+//   samples              — raw 1-minute samples, kept for 30 days
+//   samples_hourly       — rolled up to hour buckets, kept for 1 year
+//   samples_daily        — rolled up to day buckets, kept forever
+//   alerts               — record of every notification we've sent
+//   config               — single-row table of user settings
+//
+// All queries use prepared statements; we never build SQL via string
+// interpolation (so SQL injection is not a concern).
+
+final class Database {
+    private var db: OpaquePointer?
+    private let path: String
+
+    init(path: String) throws {
+        self.path = path
+        let dir = (path as NSString).deletingLastPathComponent
+        try FileManager.default.createDirectory(
+            atPath: dir, withIntermediateDirectories: true)
+
+        if sqlite3_open_v2(path, &db,
+                           SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
+                           nil) != SQLITE_OK {
+            let msg = String(cString: sqlite3_errmsg(db))
+            sqlite3_close(db)
+            db = nil
+            throw DBError.openFailed(msg)
+        }
+
+        try createSchema()
+        try pragmas()
+    }
+
+    deinit {
+        if db != nil { sqlite3_close(db) }
+    }
+
+    var filePath: String { path }
+
+    // MARK: - Schema
+
+    private func createSchema() throws {
+        let stmts: [String] = [
+            // Raw 1-minute samples. Use INTEGER for ts (unix seconds) for
+            // compactness and easy range queries. `source` is "real" or
+            // "synthetic" so the user can clear demo data independently.
+            """
+            CREATE TABLE IF NOT EXISTS samples (
+                ts        INTEGER PRIMARY KEY,
+                cpu_temp  REAL,
+                gpu_temp  REAL,
+                cpu_freq  REAL,
+                cpu_load  REAL,
+                gpu_load  REAL,
+                p_state   INTEGER,
+                fan_max   INTEGER,
+                source    TEXT NOT NULL DEFAULT 'real'
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_samples_ts ON samples(ts);",
+            "CREATE INDEX IF NOT EXISTS idx_samples_source_ts ON samples(source, ts);",
+
+            // Hourly rollup. Created by Aggregator when raw rows are evicted.
+            // Includes source so we keep real and synthetic separate.
+            """
+            CREATE TABLE IF NOT EXISTS samples_hourly (
+                bucket       INTEGER NOT NULL,
+                source       TEXT    NOT NULL DEFAULT 'real',
+                cpu_temp_avg REAL,
+                cpu_temp_max REAL,
+                gpu_temp_avg REAL,
+                gpu_temp_max REAL,
+                fan_max_avg  REAL,
+                fan_max_max  INTEGER,
+                n            INTEGER,
+                PRIMARY KEY (bucket, source)
+            );
+            """,
+
+            // Daily rollup. Same source-aware structure.
+            """
+            CREATE TABLE IF NOT EXISTS samples_daily (
+                bucket       INTEGER NOT NULL,
+                source       TEXT    NOT NULL DEFAULT 'real',
+                cpu_temp_avg REAL,
+                cpu_temp_max REAL,
+                gpu_temp_avg REAL,
+                gpu_temp_max REAL,
+                fan_max_avg  REAL,
+                fan_max_max  INTEGER,
+                n            INTEGER,
+                PRIMARY KEY (bucket, source)
+            );
+            """,
+
+            // Alert log so we don't re-notify for the same condition within
+            // the cool-down window. Keyed by (bucket, kind).
+            """
+            CREATE TABLE IF NOT EXISTS alerts (
+                ts        INTEGER PRIMARY KEY,
+                kind      TEXT NOT NULL,
+                details   TEXT NOT NULL
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_alerts_kind_ts ON alerts(kind, ts);",
+
+            // Single-row config table. id is always 0; we use ON CONFLICT
+            // semantics to upsert.
+            """
+            CREATE TABLE IF NOT EXISTS config (
+                id              INTEGER PRIMARY KEY CHECK (id = 0),
+                sample_interval INTEGER NOT NULL DEFAULT 60,
+                temp_threshold  REAL    NOT NULL DEFAULT 3.0,
+                fan_threshold   INTEGER NOT NULL DEFAULT 500,
+                baseline_days   INTEGER NOT NULL DEFAULT 60,
+                compare_days    INTEGER NOT NULL DEFAULT 7,
+                notif_enabled   INTEGER NOT NULL DEFAULT 1
+            );
+            """,
+            // Initialize the single config row on first run.
+            """
+            INSERT OR IGNORE INTO config (id) VALUES (0);
+            """,
+        ]
+        for sql in stmts {
+            try exec(sql)
+        }
+
+        // Note: no ALTER migration for the `source` column here. On
+        // a fresh DB the CREATE TABLE above already includes it. If
+        // a user has an old DB from before this column existed, the
+        // "Clear all data" button in Settings wipes it cleanly so
+        // the schema can re-create with the new shape.
+    }
+
+    private func pragmas() throws {
+        // WAL mode is more durable and faster for our small write workload.
+        try exec("PRAGMA journal_mode = WAL;")
+        try exec("PRAGMA synchronous  = NORMAL;")
+    }
+
+    // MARK: - Aggregated queries (Overview, Heatmap, Compare)
+
+    /// Return per-day stats over `[from, to]`. The query groups raw
+    /// samples by local-day bucket. This powers the heatmap and the
+    /// overview page's 7/30-day trend cards.
+    func fetchDailyStats(from fromSec: Int64, to toSec: Int64) throws -> [DailyStats] {
+        // We use a per-day bucket computed in UTC. The "date" returned
+        // is normalized to local midnight by the caller.
+        let sql = """
+            SELECT
+                (ts / 86400) * 86400                              AS bucket,
+                COUNT(*)                                          AS n,
+                MAX(cpu_temp)                                     AS cpu_peak,
+                AVG(cpu_temp)                                     AS cpu_avg,
+                MIN(cpu_temp)                                     AS cpu_min,
+                MAX(gpu_temp)                                     AS gpu_peak,
+                AVG(gpu_temp)                                     AS gpu_avg,
+                MAX(CASE WHEN fan_max > 0 THEN fan_max END)       AS fan_peak,
+                AVG(CASE WHEN fan_max > 0 THEN fan_max END)       AS fan_avg
+            FROM samples
+            WHERE ts BETWEEN ? AND ?
+            GROUP BY bucket
+            ORDER BY bucket;
+            """
+        let rows = try query(sql, bindings: [.int64(fromSec), .int64(toSec)]) { stmt in
+            let bucket = Int64(sqlite3_column_int64(stmt, 0))
+            return DailyStats(
+                date:           Date(timeIntervalSince1970: TimeInterval(bucket)),
+                sampleCount:    Int(sqlite3_column_int(stmt, 1)),
+                cpuTempPeak:    sqlite3_column_double_opt(stmt, 2),
+                cpuTempAvg:     sqlite3_column_double_opt(stmt, 3),
+                cpuTempMin:     sqlite3_column_double_opt(stmt, 4),
+                gpuTempPeak:    sqlite3_column_double_opt(stmt, 5),
+                gpuTempAvg:     sqlite3_column_double_opt(stmt, 6),
+                fanRpmPeak:     sqlite3_column_int_opt(stmt, 7),
+                fanRpmAvg:      sqlite3_column_double_opt(stmt, 8)
+            )
+        }
+        return rows
+    }
+
+    /// Per-hour stats. Used for the last-24h trend on the Overview page.
+    func fetchHourlyStats(from fromSec: Int64, to toSec: Int64) throws -> [HourlyStats] {
+        let sql = """
+            SELECT
+                (ts / 3600) * 3600                                AS bucket,
+                COUNT(*)                                          AS n,
+                MAX(cpu_temp)                                     AS cpu_peak,
+                AVG(cpu_temp)                                     AS cpu_avg,
+                MIN(cpu_temp)                                     AS cpu_min,
+                MAX(gpu_temp)                                     AS gpu_peak,
+                AVG(gpu_temp)                                     AS gpu_avg,
+                MAX(CASE WHEN fan_max > 0 THEN fan_max END)       AS fan_peak,
+                AVG(CASE WHEN fan_max > 0 THEN fan_max END)       AS fan_avg
+            FROM samples
+            WHERE ts BETWEEN ? AND ?
+            GROUP BY bucket
+            ORDER BY bucket;
+            """
+        let rows = try query(sql, bindings: [.int64(fromSec), .int64(toSec)]) { stmt in
+            let bucket = Int64(sqlite3_column_int64(stmt, 0))
+            return HourlyStats(
+                hour:           Date(timeIntervalSince1970: TimeInterval(bucket)),
+                sampleCount:    Int(sqlite3_column_int(stmt, 1)),
+                cpuTempPeak:    sqlite3_column_double_opt(stmt, 2),
+                cpuTempAvg:     sqlite3_column_double_opt(stmt, 3),
+                cpuTempMin:     sqlite3_column_double_opt(stmt, 4),
+                gpuTempPeak:    sqlite3_column_double_opt(stmt, 5),
+                gpuTempAvg:     sqlite3_column_double_opt(stmt, 6),
+                fanRpmPeak:     sqlite3_column_int_opt(stmt, 7),
+                fanRpmAvg:      sqlite3_column_double_opt(stmt, 8)
+            )
+        }
+        return rows
+    }
+
+    /// Aggregate stats for a single range. Used by the overview cards.
+    func fetchSummaryStats(from fromSec: Int64, to toSec: Int64,
+                            thresholdC: Double = 70.0) throws -> SummaryStats {
+        let sql = """
+            SELECT
+                COUNT(*)                                          AS n,
+                MAX(cpu_temp)                                     AS cpu_peak,
+                AVG(cpu_temp)                                     AS cpu_avg,
+                MIN(cpu_temp)                                     AS cpu_min,
+                MAX(gpu_temp)                                     AS gpu_peak,
+                AVG(gpu_temp)                                     AS gpu_avg,
+                MAX(CASE WHEN fan_max > 0 THEN fan_max END)       AS fan_peak,
+                AVG(CASE WHEN fan_max > 0 THEN fan_max END)       AS fan_avg,
+                SUM(CASE WHEN cpu_temp > ? THEN 1 ELSE 0 END)     AS above_n
+            FROM samples
+            WHERE ts BETWEEN ? AND ?;
+            """
+        let rows = try query(sql, bindings: [
+            .double(thresholdC),
+            .int64(fromSec),
+            .int64(toSec),
+        ]) { stmt in
+            SummaryStats(
+                from:    Date(timeIntervalSince1970: TimeInterval(fromSec)),
+                to:      Date(timeIntervalSince1970: TimeInterval(toSec)),
+                sampleCount: Int(sqlite3_column_int(stmt, 0)),
+                cpuTempPeak: sqlite3_column_double_opt(stmt, 1),
+                cpuTempAvg:  sqlite3_column_double_opt(stmt, 2),
+                cpuTempMin:  sqlite3_column_double_opt(stmt, 3),
+                gpuTempPeak: sqlite3_column_double_opt(stmt, 4),
+                gpuTempAvg:  sqlite3_column_double_opt(stmt, 5),
+                fanRpmPeak:  sqlite3_column_int_opt(stmt, 6),
+                fanRpmAvg:   sqlite3_column_double_opt(stmt, 7),
+                cpuMinutesAboveThreshold: Int(sqlite3_column_int(stmt, 8))
+            )
+        }
+        return rows.first ?? SummaryStats.empty(
+            from: Date(timeIntervalSince1970: TimeInterval(fromSec)),
+            to:   Date(timeIntervalSince1970: TimeInterval(toSec))
+        )
+    }
+
+    /// Fetch raw samples for export. Returns rows in `[from, to]`
+    /// ordered by ts. Used by CSV export and the comparison chart.
+    func fetchRawForExport(from fromSec: Int64, to toSec: Int64) throws -> [Sample] {
+        return try fetchRawSamples(from: fromSec, to: toSec)
+    }
+
+    // MARK: - Sample I/O
+
+    func insert(_ s: Sample) throws {
+        let ts = Int64(s.timestamp.timeIntervalSince1970)
+        let pState = s.maxPState ?? -1
+        let fanMax = s.maxFanRPM ?? -1
+        let sql = """
+            INSERT OR REPLACE INTO samples
+                (ts, cpu_temp, gpu_temp, cpu_freq, cpu_load, gpu_load, p_state, fan_max, source)
+            VALUES (?,?,?,?,?,?,?,?,?);
+            """
+        try exec(sql, bindings: [
+            .int64(ts),
+            .optionalDouble(s.cpuTempC),
+            .optionalDouble(s.gpuTempC),
+            .optionalDouble(s.cpuFreqGHz),
+            .optionalDouble(s.cpuLoad),
+            .optionalDouble(s.gpuLoad),
+            .int64(Int64(pState)),
+            .int64(Int64(fanMax)),
+            .text(s.source.rawValue),
+        ])
+    }
+
+    /// Number of days raw 1-minute samples are kept before being rolled up
+    /// into hourly buckets. This MUST cover the degradation detector's full
+    /// baseline window, because that analysis needs per-sample data (the
+    /// rollups drop the load/P-State dimension). Derived from config with a
+    /// safety margin; floored at 35 so the default 30-day charts always have
+    /// raw data.
+    func rawRetentionDays() -> Int {
+        let cfg = (try? loadConfig()) ?? Config()
+        return max(35, cfg.baselineDays + cfg.compareDays + 8)
+    }
+
+    /// Fetch samples in `[from, to]` (unix seconds), ordered by ts.
+    /// Combines raw, hourly, and daily tables so the chart always has
+    /// *some* data even for very old time ranges.
+    func fetchSamples(from fromSec: Int64, to toSec: Int64) throws -> [Sample] {
+        // We pull from each table separately and merge. SQLite has
+        // UNION ALL but mixing time scales is cleaner in Swift.
+        var out: [Sample] = []
+
+        let retentionDays = Int64(rawRetentionDays())
+
+        // Raw (within the retention window)
+        let rawCutoff = Int64(Date().timeIntervalSince1970) - retentionDays * 86400
+        let rawFrom = max(fromSec, rawCutoff)
+        if rawFrom <= toSec {
+            let rows = try fetchRawSamples(from: rawFrom, to: toSec)
+            out.append(contentsOf: rows)
+        }
+
+        // Hourly (retention window .. 1 year)
+        let hourCutoff = Int64(Date().timeIntervalSince1970) - 365 * 86400
+        let hourFrom = max(fromSec, hourCutoff)
+        if hourFrom <= toSec && hourFrom < rawCutoff {
+            let rows = try fetchHourlySamples(from: hourFrom, to: min(toSec, rawCutoff))
+            out.append(contentsOf: rows)
+        }
+
+        // Daily (older than 1 year)
+        if fromSec < hourCutoff {
+            let rows = try fetchDailySamples(from: fromSec, to: min(toSec, hourCutoff))
+            out.append(contentsOf: rows)
+        }
+
+        return out.sorted { $0.timestamp < $1.timestamp }
+    }
+
+    private func fetchRawSamples(from: Int64, to: Int64) throws -> [Sample] {
+        let sql = """
+            SELECT ts, cpu_temp, gpu_temp, cpu_freq, cpu_load, gpu_load, p_state, fan_max, source
+            FROM samples WHERE ts BETWEEN ? AND ? ORDER BY ts;
+            """
+        return try query(sql, bindings: [.int64(from), .int64(to)]) { stmt in
+            let sourceRaw = String(cString: sqlite3_column_text(stmt, 8))
+            return Sample(
+                timestamp: Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(stmt, 0))),
+                cpuTempC:   sqlite3_column_double_opt(stmt, 1),
+                gpuTempC:   sqlite3_column_double_opt(stmt, 2),
+                cpuFreqGHz: sqlite3_column_double_opt(stmt, 3),
+                cpuLoad:    sqlite3_column_double_opt(stmt, 4),
+                gpuLoad:    sqlite3_column_double_opt(stmt, 5),
+                cpuPState:  [Int(sqlite3_column_int(stmt, 6))].filter { $0 >= 0 },
+                fanRPMs:    [Int(sqlite3_column_int(stmt, 7))].filter { $0 >= 0 },
+                source:     SampleSource(rawValue: sourceRaw) ?? .real
+            )
+        }
+    }
+
+    /// Fetch RAW per-sample rows in `[from, to]` for statistical analysis
+    /// (the degradation detector). Unlike `fetchSamples`, this never falls
+    /// back to the hourly/daily rollups — those have lost the per-sample
+    /// load/temperature distribution and the P-State dimension, both of
+    /// which the Mann-Whitney test and load-bucketing require. The caller
+    /// must ensure raw data is retained long enough to cover its window
+    /// (see `rawRetentionDays` / Aggregator).
+    func fetchRawSamplesForAnalysis(from fromSec: Int64, to toSec: Int64) throws -> [Sample] {
+        try fetchRawSamples(from: fromSec, to: toSec)
+    }
+
+    private func fetchHourlySamples(from: Int64, to: Int64) throws -> [Sample] {
+        let sql = """
+            SELECT bucket, cpu_temp_avg, gpu_temp_avg, fan_max_avg
+            FROM samples_hourly WHERE bucket BETWEEN ? AND ? ORDER BY bucket;
+            """
+        return try query(sql, bindings: [.int64(from), .int64(to)]) { stmt in
+            Sample(
+                timestamp:  Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(stmt, 0))),
+                cpuTempC:   sqlite3_column_double_opt(stmt, 1),
+                gpuTempC:   sqlite3_column_double_opt(stmt, 2),
+                cpuFreqGHz: nil,
+                cpuLoad:    nil,
+                gpuLoad:    nil,
+                cpuPState:  [],
+                fanRPMs:    [Int(sqlite3_column_double_opt(stmt, 3) ?? 0)].filter { $0 > 0 }
+            )
+        }
+    }
+
+    private func fetchDailySamples(from: Int64, to: Int64) throws -> [Sample] {
+        let sql = """
+            SELECT bucket, cpu_temp_avg, gpu_temp_avg, fan_max_avg
+            FROM samples_daily WHERE bucket BETWEEN ? AND ? ORDER BY bucket;
+            """
+        return try query(sql, bindings: [.int64(from), .int64(to)]) { stmt in
+            Sample(
+                timestamp:  Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(stmt, 0))),
+                cpuTempC:   sqlite3_column_double_opt(stmt, 1),
+                gpuTempC:   sqlite3_column_double_opt(stmt, 2),
+                cpuFreqGHz: nil,
+                cpuLoad:    nil,
+                gpuLoad:    nil,
+                cpuPState:  [],
+                fanRPMs:    [Int(sqlite3_column_double_opt(stmt, 3) ?? 0)].filter { $0 > 0 }
+            )
+        }
+    }
+
+    // MARK: - Alert log
+
+    /// Returns true if an alert of the same `kind` was sent within the
+    /// last `cooldownSeconds` seconds. Used to throttle notifications.
+    func recentAlert(kind: String, withinSec: Int64) throws -> Bool {
+        let sql = "SELECT COUNT(*) FROM alerts WHERE kind = ? AND ts > ?;"
+        let since = Int64(Date().timeIntervalSince1970) - withinSec
+        let rows = try query(sql, bindings: [.text(kind), .int64(since)]) { stmt in
+            sqlite3_column_int(stmt, 0)
+        }
+        return rows.first.map { $0 > 0 } ?? false
+    }
+
+    func recordAlert(kind: String, details: String) throws {
+        try exec("INSERT INTO alerts (ts, kind, details) VALUES (?, ?, ?);",
+                 bindings: [
+                    .int64(Int64(Date().timeIntervalSince1970)),
+                    .text(kind),
+                    .text(details),
+                 ])
+    }
+
+    // MARK: - Config
+
+    func loadConfig() throws -> Config {
+        let sql = "SELECT sample_interval, temp_threshold, fan_threshold, baseline_days, compare_days, notif_enabled FROM config WHERE id = 0;"
+        let rows = try query(sql, bindings: []) { stmt -> Config in
+            Config(
+                sampleIntervalSec: Int(sqlite3_column_int(stmt, 0)),
+                tempThresholdC:    sqlite3_column_double(stmt, 1),
+                fanThresholdRPM:   Int(sqlite3_column_int(stmt, 2)),
+                baselineDays:      Int(sqlite3_column_int(stmt, 3)),
+                compareDays:       Int(sqlite3_column_int(stmt, 4)),
+                notificationsEnabled: sqlite3_column_int(stmt, 5) != 0
+            )
+        }
+        return rows.first ?? Config()
+    }
+
+    func saveConfig(_ cfg: Config) throws {
+        let sql = """
+            UPDATE config SET
+                sample_interval = ?,
+                temp_threshold  = ?,
+                fan_threshold   = ?,
+                baseline_days   = ?,
+                compare_days    = ?,
+                notif_enabled   = ?
+            WHERE id = 0;
+            """
+        try exec(sql, bindings: [
+            .int64(Int64(cfg.sampleIntervalSec)),
+            .double(cfg.tempThresholdC),
+            .int64(Int64(cfg.fanThresholdRPM)),
+            .int64(Int64(cfg.baselineDays)),
+            .int64(Int64(cfg.compareDays)),
+            .int64(cfg.notificationsEnabled ? 1 : 0),
+        ])
+    }
+
+    // MARK: - Maintenance
+
+    /// Delete every sample row and rollup. Used by the "Clear all data"
+    /// button in the Settings tab. Leaves the schema in place.
+    func clearAllSamples() throws {
+        try exec("DELETE FROM samples;")
+        try exec("DELETE FROM samples_hourly;")
+        try exec("DELETE FROM samples_daily;")
+        try exec("DELETE FROM alerts;")
+    }
+
+    /// Delete only rows that came from the synthetic generator.
+    /// Leaves real SMC samples untouched. Used when the user wants
+    /// to start fresh with curated synthetic data without losing
+    /// any actual measurements they've collected.
+    func clearSyntheticData() throws {
+        try exec("DELETE FROM samples       WHERE source = 'synthetic';")
+        try exec("DELETE FROM samples_hourly WHERE source = 'synthetic';")
+        try exec("DELETE FROM samples_daily  WHERE source = 'synthetic';")
+    }
+
+    /// Delete every sample row whose timestamp is before the start
+    /// of today (local midnight). Used by the "Clear data before
+    /// today" button to wipe test data while keeping the current
+    /// day's measurements.
+    func clearBeforeToday() throws {
+        let cal = Calendar.current
+        let midnight = cal.startOfDay(for: Date())
+        let cutoff = Int64(midnight.timeIntervalSince1970)
+        try exec("DELETE FROM samples       WHERE ts < ?;", bindings: [.int64(cutoff)])
+        try exec("DELETE FROM samples_hourly WHERE bucket < ?;", bindings: [.int64(cutoff)])
+        try exec("DELETE FROM samples_daily  WHERE bucket < ?;", bindings: [.int64(cutoff)])
+    }
+
+    /// Counts of rows per source, for the UI's "X real, Y synthetic"
+    /// display.
+    func sourceCounts() throws -> (real: Int, synthetic: Int) {
+        let rows = try query("""
+            SELECT source, COUNT(*) FROM samples GROUP BY source;
+            """, bindings: []) { stmt -> (String, Int) in
+            let s = String(cString: sqlite3_column_text(stmt, 0))
+            return (s, Int(sqlite3_column_int(stmt, 1)))
+        }
+        var real = 0
+        var synthetic = 0
+        for (src, n) in rows {
+            if src == "synthetic" { synthetic = n } else { real = n }
+        }
+        return (real, synthetic)
+    }
+
+    // MARK: - Transaction wrapper
+
+    /// Run `body` inside an SQLite transaction. Commits on success,
+    /// rolls back on throw. Use for bulk inserts (e.g. synthetic data
+    /// generation) where 10k+ rows would otherwise dominate the cost
+    /// of individual fsyncs.
+    func transaction(_ body: () throws -> Void) throws {
+        try exec("BEGIN TRANSACTION;")
+        do {
+            try body()
+            try exec("COMMIT;")
+        } catch {
+            try? exec("ROLLBACK;")
+            throw error
+        }
+    }
+
+    // MARK: - Aggregation (delegated to Aggregator.swift)
+
+    /// Move raw rows older than `rawCutoffSec` into samples_hourly.
+    /// Move hourly rows older than `hourCutoffSec` into samples_daily.
+    /// The rollup groups by (bucket, source) so real and synthetic
+    /// data stay in separate rows.
+    func aggregate(rawCutoffSec: Int64, hourCutoffSec: Int64) throws {
+        // 1) raw -> hourly, grouped by (bucket, source)
+        try exec("""
+            INSERT OR REPLACE INTO samples_hourly
+                (bucket, source, cpu_temp_avg, cpu_temp_max, gpu_temp_avg, gpu_temp_max,
+                 fan_max_avg, fan_max_max, n)
+            SELECT
+                (ts / 3600) * 3600 AS bucket,
+                source,
+                AVG(cpu_temp), MAX(cpu_temp),
+                AVG(gpu_temp), MAX(gpu_temp),
+                AVG(CASE WHEN fan_max > 0 THEN fan_max END),
+                MAX(CASE WHEN fan_max > 0 THEN fan_max END),
+                COUNT(*)
+            FROM samples
+            WHERE ts < ?
+            GROUP BY bucket, source;
+            """, bindings: [.int64(rawCutoffSec)])
+        try exec("DELETE FROM samples WHERE ts < ?;", bindings: [.int64(rawCutoffSec)])
+
+        // 2) hourly -> daily, also grouped by source
+        try exec("""
+            INSERT OR REPLACE INTO samples_daily
+                (bucket, source, cpu_temp_avg, cpu_temp_max, gpu_temp_avg, gpu_temp_max,
+                 fan_max_avg, fan_max_max, n)
+            SELECT
+                (bucket / 86400) * 86400 AS bucket,
+                source,
+                AVG(cpu_temp_avg), MAX(cpu_temp_max),
+                AVG(gpu_temp_avg), MAX(gpu_temp_max),
+                AVG(fan_max_avg),  MAX(fan_max_max),
+                SUM(n)
+            FROM samples_hourly
+            WHERE bucket < ?
+            GROUP BY bucket, source;
+            """, bindings: [.int64(hourCutoffSec)])
+        try exec("DELETE FROM samples_hourly WHERE bucket < ?;", bindings: [.int64(hourCutoffSec)])
+    }
+
+    // MARK: - Low-level helpers
+
+    private enum Binding {
+        case int64(Int64)
+        case double(Double)
+        case text(String)
+        case optionalDouble(Double?)
+    }
+
+    private func exec(_ sql: String, bindings: [Binding] = []) throws {
+        var stmt: OpaquePointer?
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw DBError.prepareFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        try bindAll(stmt, bindings)
+        let rc = sqlite3_step(stmt)
+        guard rc == SQLITE_DONE || rc == SQLITE_ROW else {
+            throw DBError.stepFailed(String(cString: sqlite3_errmsg(db)))
+        }
+    }
+
+    private func query<T>(_ sql: String, bindings: [Binding], map: (OpaquePointer?) -> T) throws -> [T] {
+        var stmt: OpaquePointer?
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw DBError.prepareFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        try bindAll(stmt, bindings)
+        var rows: [T] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            rows.append(map(stmt))
+        }
+        return rows
+    }
+
+    private func bindAll(_ stmt: OpaquePointer?, _ bindings: [Binding]) throws {
+        for (i, b) in bindings.enumerated() {
+            let idx = Int32(i + 1)
+            switch b {
+            case .int64(let v):
+                guard sqlite3_bind_int64(stmt, idx, v) == SQLITE_OK else { throw DBError.bindFailed }
+            case .double(let v):
+                guard sqlite3_bind_double(stmt, idx, v) == SQLITE_OK else { throw DBError.bindFailed }
+            case .text(let v):
+                let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+                guard sqlite3_bind_text(stmt, idx, v, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                    throw DBError.bindFailed
+                }
+            case .optionalDouble(let v):
+                if let v {
+                    guard sqlite3_bind_double(stmt, idx, v) == SQLITE_OK else { throw DBError.bindFailed }
+                } else {
+                    guard sqlite3_bind_null(stmt, idx) == SQLITE_OK else { throw DBError.bindFailed }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Column helper
+//
+// sqlite3_column_double returns 0 for SQL NULL. We can't distinguish
+// "value is 0" from "value is NULL" with that function alone. This
+// helper checks the column type first and returns nil for NULL.
+
+private func sqlite3_column_double_opt(_ stmt: OpaquePointer?, _ col: Int32) -> Double? {
+    if sqlite3_column_type(stmt, col) == SQLITE_NULL { return nil }
+    return sqlite3_column_double(stmt, col)
+}
+
+private func sqlite3_column_int_opt(_ stmt: OpaquePointer?, _ col: Int32) -> Int? {
+    if sqlite3_column_type(stmt, col) == SQLITE_NULL { return nil }
+    return Int(sqlite3_column_int64(stmt, col))
+}
+
+// MARK: - Errors
+
+enum DBError: Error, LocalizedError {
+    case openFailed(String)
+    case prepareFailed(String)
+    case stepFailed(String)
+    case bindFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .openFailed(let m):     return "sqlite open failed: \(m)"
+        case .prepareFailed(let m):  return "sqlite prepare failed: \(m)"
+        case .stepFailed(let m):     return "sqlite step failed: \(m)"
+        case .bindFailed:            return "sqlite bind failed"
+        }
+    }
+}
