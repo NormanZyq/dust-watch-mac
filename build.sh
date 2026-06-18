@@ -2,31 +2,73 @@
 # build.sh — Build CleanNotificationMac.app from SwiftPM
 #
 # Usage:
-#   ./build.sh           # release build
-#   ./build.sh debug     # debug build
-#   ./build.sh clean     # remove build/ directory
+#   ./build.sh                    # release build
+#   ./build.sh debug              # debug build
+#   ./build.sh clean              # remove build/ directory
+#   ./build.sh --arch arm64       # build for one architecture
 
 set -euo pipefail
 
 CONFIG="release"
-if [[ "${1:-}" == "debug" ]]; then
-    CONFIG="debug"
-elif [[ "${1:-}" == "clean" ]]; then
-    rm -rf build .build
-    echo "Cleaned build/ and .build/"
-    exit 0
+ARCH=""
+
+while [[ $# -gt 0 ]]; do
+    case "${1:-}" in
+        debug)
+            CONFIG="debug"
+            shift
+            ;;
+        clean)
+            rm -rf build .build
+            echo "Cleaned build/ and .build/"
+            exit 0
+            ;;
+        --arch)
+            if [[ $# -lt 2 ]]; then
+                echo "Usage: ./build.sh [debug|clean] [--arch arm64|x86_64]" >&2
+                exit 1
+            fi
+            ARCH="$2"
+            shift 2
+            ;;
+        -h|--help)
+            echo "Usage: ./build.sh [debug|clean] [--arch arm64|x86_64]" >&2
+            exit 0
+            ;;
+        *)
+            echo "ERROR: Unknown argument: $1" >&2
+            echo "Usage: ./build.sh [debug|clean] [--arch arm64|x86_64]" >&2
+            exit 1
+            ;;
+    esac
+done
+
+ARCH_ARGS=()
+if [[ -n "$ARCH" ]]; then
+    ARCH_ARGS=("--arch" "$ARCH")
 fi
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 APP_NAME="CleanNotificationMac"
 BUNDLE_ID="com.local.clean-notification-mac"
 BUILD_DIR="$ROOT/build"
-APP_DIR="$BUILD_DIR/$APP_NAME.app"
 
-echo "==> Building Swift package ($CONFIG)…"
-swift build -c "$CONFIG"
+SUFFIX=""
+if [[ -n "$ARCH" ]]; then
+    SUFFIX="-$ARCH"
+fi
 
-BIN_PATH="$(swift build -c "$CONFIG" --show-bin-path)/$APP_NAME"
+APP_DIR="$BUILD_DIR/$APP_NAME$SUFFIX.app"
+
+if [[ -n "$ARCH" ]]; then
+    echo "==> Building Swift package ($CONFIG, arch: $ARCH)…"
+else
+    echo "==> Building Swift package ($CONFIG)…"
+fi
+
+swift build -c "$CONFIG" "${ARCH_ARGS[@]}"
+
+BIN_PATH="$(swift build -c "$CONFIG" "${ARCH_ARGS[@]}" --show-bin-path)/$APP_NAME"
 if [[ ! -x "$BIN_PATH" ]]; then
     echo "ERROR: Built binary not found at $BIN_PATH" >&2
     exit 1
