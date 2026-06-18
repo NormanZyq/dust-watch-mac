@@ -86,9 +86,13 @@
 "vs yesterday" = "vs yesterday";
 "Sampling" = "Sampling";
 "Interval" = "Interval";
+"%d sec" = "%d sec";
+"Thermal alert" = "Thermal alert";
 "Temperature rise threshold" = "Temperature rise threshold";
 "Fan RPM rise" = "Fan RPM rise";
 "Comparison windows" = "Comparison windows";
+"%d days" = "%d days";
+"Notifications" = "Notifications";
 "Enable system notifications" = "Enable system notifications";
 "Save" = "Save";
 "Saved %@" = "Saved %@";
@@ -96,6 +100,7 @@
 "Use synthetic data (demo mode)" = "Use synthetic data (demo mode)";
 "Replaces SMC reads with a realistic generator. Useful when SMC isn't working on this macOS version, or to explore the app quickly." = "Replaces SMC reads with a realistic generator. Useful when SMC isn't working on this macOS version, or to explore the app quickly.";
 "Days of history to generate" = "Days of history to generate";
+"Random seed" = "Random seed";
 "Generating…" = "Generating…";
 "Generate %d-day history" = "Generate %d-day history";
 "Inserting synthetic samples…" = "Inserting synthetic samples…";
@@ -113,6 +118,8 @@
 "✓ Cleared data before today 00:00" = "✓ Cleared data before today 00:00";
 "✓ All data cleared" = "✓ All data cleared";
 "✓ Generated %d synthetic samples" = "✓ Generated %d synthetic samples";
+"✗ Generation failed: %@" = "✗ Generation failed: %@";
+"Data" = "Data";
 "Daily heatmap" = "Daily heatmap";
 "13 weeks" = "13 weeks";
 "26 weeks" = "26 weeks";

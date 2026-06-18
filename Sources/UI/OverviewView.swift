@@ -474,7 +474,7 @@ struct OverviewView: View {
 
                     // 75°C warning rule (only when CPU temp is visible
                     // — otherwise the rule has nothing to relate to).
-                    if sparkConfig.showCPUTemp {
+                    if sparkConfig.showCPUTemp && shouldShowWarningRule(in: primaryDomain) {
                         RuleMark(y: .value("Warning", 75))
                             .foregroundStyle(.red.opacity(0.45))
                             .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
@@ -545,6 +545,7 @@ struct OverviewView: View {
                 )
                 .frame(height: 180)
             } else {
+                let primaryDomain = weeklyTrendDomain(last7Days)
                 InteractiveChart(
                     data: last7Days,
                     dateKey: \.date,
@@ -582,10 +583,11 @@ struct OverviewView: View {
                         }
                     }
 
-                    // 75°C warning rule
-                    RuleMark(y: .value("Warning", 75))
-                        .foregroundStyle(.red.opacity(0.4))
-                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                    if shouldShowWarningRule(in: primaryDomain) {
+                        RuleMark(y: .value("Warning", 75))
+                            .foregroundStyle(.red.opacity(0.4))
+                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                    }
                 }
                 .frame(height: 180)
             }
@@ -604,6 +606,13 @@ struct OverviewView: View {
             HoverRow(label: L("Samples"),  color: .secondary,
                      value: Double(d.sampleCount), unit: "", fractionDigits: 0),
         ]
+    }
+
+    private func weeklyTrendDomain(_ data: [DailyStats]) -> ClosedRange<Double> {
+        let values = data.compactMap(\.cpuTempMin)
+            + data.compactMap(\.cpuTempAvg)
+            + data.compactMap(\.cpuTempPeak)
+        return paddedAxisDomain(values: values, fallback: 0...100, minSpan: 12)
     }
 
     // MARK: - Data loading

@@ -63,7 +63,7 @@
 "Temperatures and fan RPM are synthesized, not from the SMC. Open Settings to turn this off (once SMC reads are working)." = "温度和风扇转速由模拟数据生成，未读取实际 SMC。请在 SMC 可用后前往设置关闭演示模式。";
 "Thermal degradation detected" = "检测到热衰减";
 "%@ · load level %d · rise +%.1f°C vs baseline · p=%.3f" = "%@ · 负载等级 %d · 高于基线 +%.1f°C · p=%.3f";
-"At the same workload, %@ now runs hotter above its idle temperature than it used to — corrected for room-temperature changes. This often indicates dust buildup or aging thermal paste." = "在相同负载下，%@ 的空闲温差上升 %.1f°C，且已做环境温度修正。通常表示散热降效，如尘埃堆积或硅脂老化。";
+"At the same workload, %@ now runs hotter above its idle temperature than it used to — corrected for room-temperature changes. This often indicates dust buildup or aging thermal paste." = "在相同负载下，%@ 现在比过去更高于空载温度，且已做环境温度修正。通常表示散热降效，如尘埃堆积或硅脂老化。";
 "Recent median %@ temperature is significantly higher than the long-term baseline at the same workload. (No idle reference was available to correct for room temperature.)" = "近期 %@ 温度中位数显著高于长期基线（同负载）。当前无法获得空闲温度基线，因此未进行环境温度校正。";
 "Collecting data…" = "数据采集中…";
 "The sampler is running. You'll see real numbers here within a minute, and trend information over the coming days." = "采样器正在运行，大约一分钟后会出现真实数据，接下来几天会显示趋势信息。";
@@ -86,9 +86,13 @@
 "vs yesterday" = "对比昨日";
 "Sampling" = "采样";
 "Interval" = "采样间隔";
+"%d sec" = "%d 秒";
+"Thermal alert" = "温度告警";
 "Temperature rise threshold" = "温升阈值";
 "Fan RPM rise" = "风扇转速阈值";
 "Comparison windows" = "比较窗口";
+"%d days" = "%d 天";
+"Notifications" = "通知";
 "Enable system notifications" = "启用系统通知";
 "Save" = "保存";
 "Saved %@" = "已保存：%@";
@@ -96,6 +100,7 @@
 "Use synthetic data (demo mode)" = "使用合成数据（演示模式）";
 "Replaces SMC reads with a realistic generator. Useful when SMC isn't working on this macOS version, or to explore the app quickly." = "用更真实的模拟数据替代 SMC 读取。适用于当前 macOS 版本 SMC 不可用，或你想快速体验界面时。";
 "Days of history to generate" = "生成天数";
+"Random seed" = "随机种子";
 "Generating…" = "正在生成…";
 "Generate %d-day history" = "生成 %d 天历史";
 "Inserting synthetic samples…" = "正在写入模拟样本…";
@@ -113,6 +118,8 @@
 "✓ Cleared data before today 00:00" = "✓ 已清理今日之前数据";
 "✓ All data cleared" = "✓ 已清空全部数据";
 "✓ Generated %d synthetic samples" = "✓ 已生成 %d 条模拟样本";
+"✗ Generation failed: %@" = "✗ 生成失败：%@";
+"Data" = "数据";
 "Daily heatmap" = "每日热力图";
 "13 weeks" = "13 周";
 "26 weeks" = "26 周";
@@ -146,7 +153,7 @@
 "# Rows: %d" = "# 样本数：%d";
 "Possible thermal degradation detected" = "可能检测到热衰减";
 "%@ temperature rise over idle, at load level %d, grew by %.1f°C over the last %d days versus the %d-day baseline (now +%.1f°C above idle, was +%.1f°C; p = %.3f). This is corrected for room-temperature changes." = "%@ 在空载基线校正后，于负载等级 %d 的温度上升 %.1f°C（最近 %d 天相比 %d 天基线），当前高出空载值 +%.1f°C，之前为 +%.1f°C（p=%.3f）。该结果已进行环境温度修正。";
-"%@ median temperature at load level %d is %.1f°C in the last %d days — %.1f°C higher than the %d-day baseline (p = %.3f). Note: no idle reference was available, so this is not corrected for room-temperature changes." = "%@ 在负载等级 %d 下，最近 %d 天的温度中位数为 %.1f°C，较 %d 天基线高 %.1f°C（p=%.3f）。当前无空载参考，未进行环境温度修正。";
+"%@ median temperature at load level %d is %.1f°C in the last %d days — %.1f°C higher than the %d-day baseline (p = %.3f). Note: no idle reference was available, so this is not corrected for room-temperature changes." = "%@ 在负载等级 %d 下的近期温度中位数为 %.1f°C（最近 %d 天），较基线高 %.1f°C（基线 %d 天，p=%.3f）。当前无空载参考，未进行环境温度修正。";
 "%@ Fan RPM at this load also rose from %.0f to %.0f (+%.0f RPM), consistent with the cooling system working harder to hold the same temperature." = "%@ 在此负载下风扇转速也从 %.0f 升至 %.0f（+%.0f RPM），说明散热系统正在更努力维持温度。";
 "CPU peak: %@  GPU peak: %@  (%@ samples)" = "CPU 峰值: %@  GPU 峰值: %@  （%@ 条样本）";
 "CPU avg: %@" = "CPU 平均: %@";

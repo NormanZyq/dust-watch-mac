@@ -460,7 +460,7 @@ struct ChartsView: View {
                 }
             }
 
-            if seriesConfig.showCPUTemp {
+            if seriesConfig.showCPUTemp && shouldShowWarningRule(in: primaryDomain) {
                 RuleMark(y: .value("Warning", 75))
                     .foregroundStyle(.red.opacity(0.5))
                     .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
@@ -671,7 +671,7 @@ struct ChartsView: View {
                     }
                 }
             }
-            if seriesConfig.showCPUTemp {
+            if seriesConfig.showCPUTemp && shouldShowWarningRule(in: primaryDomain) {
                 RuleMark(y: .value("Warning", 75))
                     .foregroundStyle(.red.opacity(0.4))
                     .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
@@ -781,7 +781,7 @@ struct ChartsView: View {
                     }
                 }
             }
-            if seriesConfig.showCPUTemp {
+            if seriesConfig.showCPUTemp && shouldShowWarningRule(in: primaryDomain) {
                 RuleMark(y: .value("Warning", 75))
                     .foregroundStyle(.red.opacity(0.4))
                     .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
@@ -897,7 +897,7 @@ struct ChartsView: View {
                     }
                 }
             }
-            if seriesConfig.showCPUTemp {
+            if seriesConfig.showCPUTemp && shouldShowWarningRule(in: primaryDomain) {
                 RuleMark(y: .value("Warning", 75))
                     .foregroundStyle(.red.opacity(0.4))
                     .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))

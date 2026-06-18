@@ -37,7 +37,7 @@ JSON
 JSON
           else
             cat >"$matrix_file" <<'JSON'
-[{"arch":"x86_64","runner":"macos-13","name":"x86_64"},{"arch":"arm64","runner":"macos-14","name":"arm64"}]
+[{"arch":"x86_64","runner":"macos-15-intel","name":"x86_64"},{"arch":"arm64","runner":"macos-14","name":"arm64"}]
 JSON
           fi
 

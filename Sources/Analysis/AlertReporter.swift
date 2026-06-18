@@ -84,7 +84,7 @@ final class AlertReporter {
             fanLine = " " + String(
                 format: L("%@ Fan RPM at this load also rose from %.0f to %.0f (+%.0f RPM), consistent "
                       + "with the cooling system working harder to hold the same temperature."),
-                f.fanBaselineMean, f.fanRecentMean, f.fanDelta
+                sub, f.fanBaselineMean, f.fanRecentMean, f.fanDelta
             )
         } else {
             fanLine = ""

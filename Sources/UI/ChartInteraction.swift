@@ -295,6 +295,10 @@ func mapValue(_ value: Double, from source: ClosedRange<Double>, to target: Clos
     return target.lowerBound + ratio * (target.upperBound - target.lowerBound)
 }
 
+func shouldShowWarningRule(in domain: ClosedRange<Double>, threshold: Double = 75) -> Bool {
+    domain.contains(threshold)
+}
+
 // MARK: - ChartHoverState
 //
 // Mouse-move events can arrive far faster than the UI needs to redraw.
