@@ -120,11 +120,11 @@ enum SeriesKind: Hashable, CaseIterable {
 
     var label: String {
         switch self {
-        case .cpuTemp: return "CPU"
-        case .gpuTemp: return "GPU"
-        case .fanRPM:  return "Fan"
-        case .cpuLoad: return "CPU%"
-        case .gpuLoad: return "GPU%"
+        case .cpuTemp: return L("CPU")
+        case .gpuTemp: return L("GPU")
+        case .fanRPM:  return L("Fan")
+        case .cpuLoad: return L("CPU%")
+        case .gpuLoad: return L("GPU%")
         }
     }
 
@@ -193,7 +193,7 @@ struct SeriesToggleBar: View {
             )
         }
         .buttonStyle(.plain)
-        .help("Toggle \(kind.label) series")
+        .help(String(format: L("Toggle %@ series"), kind.label))
     }
 
     private func bindingFor(_ kind: SeriesKind) -> Binding<Bool> {

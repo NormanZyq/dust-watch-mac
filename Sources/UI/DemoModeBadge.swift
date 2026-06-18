@@ -14,14 +14,14 @@ struct DemoModeBadge: View {
             Image(systemName: "wand.and.stars")
                 .font(.caption2)
             if !compact {
-                Text("DEMO").font(.caption2).fontWeight(.bold)
+                Text(L("DEMO")).font(.caption2).fontWeight(.bold)
             }
         }
         .foregroundStyle(.white)
         .padding(.horizontal, compact ? 6 : 8)
         .padding(.vertical, compact ? 3 : 4)
         .background(.orange, in: Capsule())
-        .help("Sampler is using synthetic data, not real SMC reads.")
+        .help(L("Sampler is using synthetic data, not real SMC reads."))
     }
 }
 

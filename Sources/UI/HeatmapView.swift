@@ -35,19 +35,19 @@ struct HeatmapView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack {
-                Text("Daily heatmap").font(.title2).fontWeight(.semibold)
+                Text(L("Daily heatmap")).font(.title2).fontWeight(.semibold)
                 if loading { ProgressView().controlSize(.small) }
                 Spacer()
-                Picker("Range", selection: $weeks) {
-                    Text("13 weeks").tag(13)
-                    Text("26 weeks").tag(26)
-                    Text("52 weeks").tag(52)
+                Picker(L("Range"), selection: $weeks) {
+                    Text(L("13 weeks")).tag(13)
+                    Text(L("26 weeks")).tag(26)
+                    Text(L("52 weeks")).tag(52)
                 }
                 .pickerStyle(.segmented)
                 .frame(width: 280)
                 .onChange(of: weeks) { _ in load() }
             }
-            Text("Each square is one day, colored by peak CPU temperature. Hover or click for details.")
+            Text(L("Each square is one day, colored by peak CPU temperature. Hover or click for details."))
                 .font(.callout).foregroundStyle(.secondary)
         }
     }
@@ -56,17 +56,17 @@ struct HeatmapView: View {
 
     private var legend: some View {
         HStack(spacing: 12) {
-            Text("cool")
+            Text(L("cool"))
                 .font(.caption2).foregroundStyle(.secondary)
             ForEach(HeatPalette.allCases) { p in
                 RoundedRectangle(cornerRadius: 2)
                     .fill(p.color)
                     .frame(width: 14, height: 14)
             }
-            Text("hot")
+            Text(L("hot"))
                 .font(.caption2).foregroundStyle(.secondary)
             Spacer()
-            Text("\(daysWithData) of \(totalDays) days have data")
+            Text(String(format: L("%d of %d days have data"), daysWithData, totalDays))
                 .font(.caption2).foregroundStyle(.secondary)
         }
     }
@@ -211,9 +211,10 @@ struct DaySquare: View {
         if let s = cell.stats {
             let cpu = s.cpuTempPeak.map { String(format: "%.1f°C", $0) } ?? "—"
             let gpu = s.gpuTempPeak.map { String(format: "%.1f°C", $0) } ?? "—"
-            line += "\nCPU peak: \(cpu)  GPU peak: \(gpu)  (\(s.sampleCount) samples)"
+            line += "\n" + String(format: L("CPU peak: %@  GPU peak: %@  (%@ samples)"),
+                                 cpu, gpu, String(s.sampleCount))
         } else {
-            line += "\nno data"
+            line += "\n" + L("No data")
         }
         return line
     }
@@ -231,12 +232,12 @@ struct DayDetail: View {
             Text(stats.date.formatted(date: .complete, time: .omitted))
                 .font(.headline)
             Divider()
-            row("Samples", String(stats.sampleCount))
-            row("CPU peak", stats.cpuTempPeak.map { String(format: "%.1f°C", $0) } ?? "—")
-            row("CPU avg",  stats.cpuTempAvg.map  { String(format: "%.1f°C", $0) } ?? "—")
-            row("CPU min",  stats.cpuTempMin.map  { String(format: "%.1f°C", $0) } ?? "—")
-            row("GPU peak", stats.gpuTempPeak.map { String(format: "%.1f°C", $0) } ?? "—")
-            row("Fan peak", stats.fanRpmPeak.map  { "\($0) RPM" }            ?? "—")
+            row(L("Samples"), String(stats.sampleCount))
+            row(L("CPU peak"), stats.cpuTempPeak.map { String(format: "%.1f°C", $0) } ?? "—")
+            row(L("CPU avg"),  stats.cpuTempAvg.map  { String(format: "%.1f°C", $0) } ?? "—")
+            row(L("CPU min"),  stats.cpuTempMin.map  { String(format: "%.1f°C", $0) } ?? "—")
+            row(L("GPU peak"), stats.gpuTempPeak.map { String(format: "%.1f°C", $0) } ?? "—")
+            row(L("Fan peak"), stats.fanRpmPeak.map  { "\($0) RPM" }            ?? "—")
         }
         .padding(14)
         .frame(width: 260)

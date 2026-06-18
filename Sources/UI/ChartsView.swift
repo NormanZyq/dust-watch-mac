@@ -86,10 +86,10 @@ struct ChartsView: View {
         .onAppear(perform: load)
         .onChange(of: range)        { _ in load() }
         .onChange(of: aggregation)  { _ in load() }
-        .alert("Export failed",
+        .alert(L("Export failed"),
                isPresented: Binding(get: { exportError != nil },
                                     set: { if !$0 { exportError = nil } })) {
-            Button("OK", role: .cancel) { }
+            Button(L("OK"), role: .cancel) { }
         } message: {
             Text(exportError ?? "")
         }
@@ -106,19 +106,19 @@ struct ChartsView: View {
 
     private var title: String {
         switch mode {
-        case .live:    return "Live (last 24 hours)"
-        case .compare: return "Baseline vs recent"
-        case .history: return "History"
+        case .live:    return L("Live (last 24 hours)")
+        case .compare: return L("Baseline vs recent")
+        case .history: return L("History")
         }
     }
     private var subtitle: String {
         switch mode {
         case .live:
-            return "Raw 1-minute samples from the last 24 hours. Hover for CPU/GPU/Fan values."
+            return L("Raw 1-minute samples from the last 24 hours. Hover for CPU/GPU/Fan values.")
         case .compare:
-            return "Median CPU temperature at the most-degraded P-State, recent vs baseline. Hover bars for detail."
+            return L("Median CPU temperature at the most-degraded P-State, recent vs baseline. Hover bars for detail.")
         case .history:
-            return "Explore the full range of recorded data. Pick a time range, an aggregation level, and hover for point values."
+            return L("Explore the full range of recorded data. Pick a time range, an aggregation level, and hover for point values.")
         }
     }
 
@@ -130,17 +130,17 @@ struct ChartsView: View {
     private var controlsCard: some View {
         if mode == .history {
             HStack(spacing: 14) {
-                Picker("Range", selection: $range) {
+                Picker(L("Range"), selection: $range) {
                     ForEach(Range.allCases) { r in
-                        Text(r.rawValue).tag(r)
+                        Text(L(r.rawValue)).tag(r)
                     }
                 }
                 .pickerStyle(.segmented)
                 .frame(width: 320)
 
-                Picker("Aggregation", selection: $aggregation) {
+                Picker(L("Aggregation"), selection: $aggregation) {
                     ForEach(Aggregation.allCases) { a in
-                        Text(a.rawValue).tag(a)
+                        Text(L(a.rawValue)).tag(a)
                     }
                 }
                 .pickerStyle(.segmented)
@@ -151,9 +151,9 @@ struct ChartsView: View {
                 Button {
                     exportCSV()
                 } label: {
-                    Label("Export CSV", systemImage: "square.and.arrow.up")
+                    Label(L("Export CSV"), systemImage: "square.and.arrow.up")
                 }
-                .help("Export the current view as a CSV file")
+                .help(L("Export the current view as a CSV file"))
             }
             .padding(10)
             .background(Color(NSColor.controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
@@ -174,7 +174,7 @@ struct ChartsView: View {
         VStack(alignment: .leading, spacing: 10) {
             if shouldShowToggleBar {
                 HStack {
-                    Text("Series")
+                    Text(L("Series"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     SeriesToggleBar(
@@ -192,9 +192,9 @@ struct ChartsView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if isEmpty {
                     ContentUnavailableViewCompat(
-                        title: "No data in this range",
+                        title: L("No data in this range"),
                         systemImage: "tray",
-                        description: "Pick a wider time range, or wait for the sampler to collect more."
+                        description: L("Pick a wider time range, or wait for the sampler to collect more.")
                     )
                 } else {
                     switch mode {
@@ -391,7 +391,7 @@ struct ChartsView: View {
                         LineMark(
                             x: .value("Time", s.timestamp),
                             y: .value("°C", v),
-                            series: .value("Series", "CPU")
+                            series: .value(L("Series"), L("CPU"))
                         )
                         .foregroundStyle(.orange)
                         .interpolationMethod(.monotone)
@@ -406,7 +406,7 @@ struct ChartsView: View {
                         LineMark(
                             x: .value("Time", s.timestamp),
                             y: .value("°C", v),
-                            series: .value("Series", "GPU")
+                            series: .value(L("Series"), L("GPU"))
                         )
                         .foregroundStyle(.blue)
                         .interpolationMethod(.monotone)
@@ -421,7 +421,7 @@ struct ChartsView: View {
                         LineMark(
                             x: .value("Time", s.timestamp),
                             y: .value("RPM", mapValue(rpm, from: secondaryDomain, to: primaryDomain)),
-                            series: .value("Series", "Fan")
+                            series: .value(L("Series"), L("Fan"))
                         )
                         .foregroundStyle(.green)
                         .interpolationMethod(.monotone)
@@ -436,7 +436,7 @@ struct ChartsView: View {
                         LineMark(
                             x: .value("Time", s.timestamp),
                             y: .value("%", load * 100),
-                            series: .value("Series", "CPU load")
+                            series: .value(L("Series"), L("CPU load"))
                         )
                         .foregroundStyle(Color.orange.opacity(0.55))
                         .interpolationMethod(.monotone)
@@ -451,7 +451,7 @@ struct ChartsView: View {
                         LineMark(
                             x: .value("Time", s.timestamp),
                             y: .value("%", load * 100),
-                            series: .value("Series", "GPU load")
+                            series: .value(L("Series"), L("GPU load"))
                         )
                         .foregroundStyle(Color.blue.opacity(0.55))
                         .interpolationMethod(.monotone)
@@ -465,7 +465,7 @@ struct ChartsView: View {
                     .foregroundStyle(.red.opacity(0.5))
                     .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
                     .annotation(position: .top, alignment: .leading) {
-                        Text("75°C").font(.caption2).foregroundStyle(.red.opacity(0.8))
+                        Text(L("75°C")).font(.caption2).foregroundStyle(.red.opacity(0.8))
                     }
             }
         }
@@ -483,14 +483,14 @@ struct ChartsView: View {
     ) -> [HoverRow] {
         var rows: [HoverRow] = []
         if seriesConfig.showCPUTemp {
-            rows.append(HoverRow(label: "CPU temp", color: .orange, value: s.cpuTempC))
+            rows.append(HoverRow(label: L("CPU temp"), color: .orange, value: s.cpuTempC))
         }
         if seriesConfig.showGPUTemp {
-            rows.append(HoverRow(label: "GPU temp", color: .blue, value: s.gpuTempC))
+            rows.append(HoverRow(label: L("GPU temp"), color: .blue, value: s.gpuTempC))
         }
         if seriesConfig.showFanRPM {
             rows.append(HoverRow(
-                label: "Fan RPM",
+                label: L("Fan RPM"),
                 color: .green,
                 plotValue: s.maxFanRPM.map {
                     mapValue(Double($0), from: secondaryDomain, to: primaryDomain)
@@ -501,12 +501,12 @@ struct ChartsView: View {
             ))
         }
         if seriesConfig.showCPULoad {
-            rows.append(HoverRow(label: "CPU load", color: .orange.opacity(0.6),
+            rows.append(HoverRow(label: L("CPU load"), color: .orange.opacity(0.6),
                                  value: s.cpuLoad.map { $0 * 100 },
                                  unit: "%", fractionDigits: 0))
         }
         if seriesConfig.showGPULoad {
-            rows.append(HoverRow(label: "GPU load", color: .blue.opacity(0.6),
+            rows.append(HoverRow(label: L("GPU load"), color: .blue.opacity(0.6),
                                  value: s.gpuLoad.map { $0 * 100 },
                                  unit: "%", fractionDigits: 0))
         }
@@ -556,18 +556,18 @@ struct ChartsView: View {
         .overlay(alignment: .bottom) {
             if let f = f {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(String(format: "Δ = %+.1f°C · p = %.3f · n=%d vs %d",
-                                f.tempDelta, f.pValue, f.recentCount, f.baselineCount))
+                Text(String(format: L("Δ = %+.1f°C · p = %.3f · n=%d vs %d"),
+                            f.tempDelta, f.pValue, f.recentCount, f.baselineCount))
                         .font(.caption).foregroundStyle(.secondary)
                     if f.fanDelta > 0 {
-                        Text(String(format: "Fan RPM: %.0f → %.0f (+%.0f)",
+                        Text(String(format: L("Fan RPM: %.0f → %.0f (+%.0f)"),
                                     f.fanBaselineMean, f.fanRecentMean, f.fanDelta))
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 .padding(8)
             } else {
-                Text("No significant degradation detected in the current window.")
+                Text(L("No significant degradation detected in the current window."))
                     .font(.caption).foregroundStyle(.secondary)
                     .padding(8)
             }
@@ -607,7 +607,7 @@ struct ChartsView: View {
                         LineMark(
                             x: .value("Time", s.timestamp),
                             y: .value("°C", v),
-                            series: .value("Series", "CPU")
+                            series: .value(L("Series"), L("CPU"))
                         )
                         .foregroundStyle(.orange)
                         .interpolationMethod(.monotone)
@@ -621,7 +621,7 @@ struct ChartsView: View {
                         LineMark(
                             x: .value("Time", s.timestamp),
                             y: .value("°C", v),
-                            series: .value("Series", "GPU")
+                            series: .value(L("Series"), L("GPU"))
                         )
                         .foregroundStyle(.blue)
                         .interpolationMethod(.monotone)
@@ -635,7 +635,7 @@ struct ChartsView: View {
                         LineMark(
                             x: .value("Time", s.timestamp),
                             y: .value("RPM", mapValue(rpm, from: secondaryDomain, to: primaryDomain)),
-                            series: .value("Series", "Fan")
+                            series: .value(L("Series"), L("Fan"))
                         )
                         .foregroundStyle(.green)
                         .interpolationMethod(.monotone)
@@ -649,7 +649,7 @@ struct ChartsView: View {
                         LineMark(
                             x: .value("Time", s.timestamp),
                             y: .value("%", load * 100),
-                            series: .value("Series", "CPU load")
+                            series: .value(L("Series"), L("CPU load"))
                         )
                         .foregroundStyle(Color.orange.opacity(0.55))
                         .interpolationMethod(.monotone)
@@ -663,7 +663,7 @@ struct ChartsView: View {
                         LineMark(
                             x: .value("Time", s.timestamp),
                             y: .value("%", load * 100),
-                            series: .value("Series", "GPU load")
+                            series: .value(L("Series"), L("GPU load"))
                         )
                         .foregroundStyle(Color.blue.opacity(0.55))
                         .interpolationMethod(.monotone)
@@ -691,16 +691,16 @@ struct ChartsView: View {
             rowsForPoint: { h in
                 var rows: [HoverRow] = []
                 if seriesConfig.showCPUTemp {
-                    rows.append(HoverRow(label: "CPU peak", color: .orange, value: h.cpuTempPeak))
-                    rows.append(HoverRow(label: "CPU avg",  color: .orange.opacity(0.85), value: h.cpuTempAvg))
-                    rows.append(HoverRow(label: "CPU min",  color: .orange.opacity(0.55), value: h.cpuTempMin))
+                    rows.append(HoverRow(label: L("CPU peak"), color: .orange, value: h.cpuTempPeak))
+                    rows.append(HoverRow(label: L("CPU avg"),  color: .orange.opacity(0.85), value: h.cpuTempAvg))
+                    rows.append(HoverRow(label: L("CPU min"),  color: .orange.opacity(0.55), value: h.cpuTempMin))
                 }
                 if seriesConfig.showGPUTemp {
-                    rows.append(HoverRow(label: "GPU peak", color: .blue, value: h.gpuTempPeak))
+                    rows.append(HoverRow(label: L("GPU peak"), color: .blue, value: h.gpuTempPeak))
                 }
                 if seriesConfig.showFanRPM {
                     rows.append(HoverRow(
-                        label: "Fan RPM",
+                        label: L("Fan RPM"),
                         color: .green,
                         plotValue: h.fanRpmPeak.map {
                             mapValue(Double($0), from: secondaryDomain, to: primaryDomain)
@@ -745,7 +745,7 @@ struct ChartsView: View {
                         LineMark(
                             x: .value("Hour", h.hour),
                             y: .value("°C", v),
-                            series: .value("Series", "CPU avg")
+                            series: .value(L("Series"), L("CPU avg"))
                         )
                         .foregroundStyle(.orange)
                         .interpolationMethod(.monotone)
@@ -759,7 +759,7 @@ struct ChartsView: View {
                         LineMark(
                             x: .value("Hour", h.hour),
                             y: .value("°C", v),
-                            series: .value("Series", "GPU avg")
+                            series: .value(L("Series"), L("GPU avg"))
                         )
                         .foregroundStyle(.blue)
                         .interpolationMethod(.monotone)
@@ -773,7 +773,7 @@ struct ChartsView: View {
                         LineMark(
                             x: .value("Hour", h.hour),
                             y: .value("RPM", mapValue(rpm, from: secondaryDomain, to: primaryDomain)),
-                            series: .value("Series", "Fan")
+                            series: .value(L("Series"), L("Fan"))
                         )
                         .foregroundStyle(.green)
                         .interpolationMethod(.monotone)
@@ -801,17 +801,17 @@ struct ChartsView: View {
             rowsForPoint: { d in
                 var rows: [HoverRow] = []
                 if seriesConfig.showCPUTemp {
-                    rows.append(HoverRow(label: "CPU peak", color: .orange, value: d.cpuTempPeak))
-                    rows.append(HoverRow(label: "CPU avg",  color: .orange.opacity(0.85), value: d.cpuTempAvg))
-                    rows.append(HoverRow(label: "CPU min",  color: .orange.opacity(0.55), value: d.cpuTempMin))
+                    rows.append(HoverRow(label: L("CPU peak"), color: .orange, value: d.cpuTempPeak))
+                    rows.append(HoverRow(label: L("CPU avg"),  color: .orange.opacity(0.85), value: d.cpuTempAvg))
+                    rows.append(HoverRow(label: L("CPU min"),  color: .orange.opacity(0.55), value: d.cpuTempMin))
                 }
                 if seriesConfig.showGPUTemp {
-                    rows.append(HoverRow(label: "GPU peak", color: .blue, value: d.gpuTempPeak))
-                    rows.append(HoverRow(label: "GPU avg", color: .blue.opacity(0.75), value: d.gpuTempAvg))
+                    rows.append(HoverRow(label: L("GPU peak"), color: .blue, value: d.gpuTempPeak))
+                    rows.append(HoverRow(label: L("GPU avg"), color: .blue.opacity(0.75), value: d.gpuTempAvg))
                 }
                 if seriesConfig.showFanRPM {
                     rows.append(HoverRow(
-                        label: "Fan peak",
+                        label: L("Fan peak"),
                         color: .green,
                         plotValue: d.fanRpmPeak.map {
                             mapValue(Double($0), from: secondaryDomain, to: primaryDomain)
@@ -822,7 +822,7 @@ struct ChartsView: View {
                     ))
                 }
                 rows.append(HoverRow(
-                    label: "Samples",
+                    label: L("Samples"),
                     color: .secondary,
                     plotValue: nil,
                     displayValue: Double(d.sampleCount),
@@ -875,7 +875,7 @@ struct ChartsView: View {
                         LineMark(
                             x: .value("Day", d.date),
                             y: .value("°C", v),
-                            series: .value("Series", "GPU peak")
+                            series: .value(L("Series"), L("GPU peak"))
                         )
                         .foregroundStyle(.blue)
                         .interpolationMethod(.monotone)
@@ -889,7 +889,7 @@ struct ChartsView: View {
                         LineMark(
                             x: .value("Day", d.date),
                             y: .value("RPM", mapValue(rpm, from: secondaryDomain, to: primaryDomain)),
-                            series: .value("Series", "Fan")
+                            series: .value(L("Series"), L("Fan"))
                         )
                         .foregroundStyle(.green)
                         .interpolationMethod(.monotone)
@@ -917,11 +917,11 @@ struct ChartsView: View {
 
     private var footer: some View {
         HStack {
-            Text("\(sampleCount) data points")
+            Text(String(format: L("%d data points"), sampleCount))
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
             if let url = exportedURL {
-                Button("Reveal in Finder") {
+                Button(L("Reveal in Finder")) {
                     NSWorkspace.shared.activateFileViewerSelecting([url])
                 }
                 .font(.caption)

@@ -63,7 +63,10 @@ final class MenuBarController: NSObject {
         guard let button = statusItem.button else { return }
         let symbol = alertActive ? "thermometer.high.fill" : "thermometer.medium"
         let cfg = NSImage.SymbolConfiguration(pointSize: 16, weight: .regular)
-        let img = NSImage(systemSymbolName: symbol, accessibilityDescription: "Clean Notification")
+        let img = NSImage(
+            systemSymbolName: symbol,
+            accessibilityDescription: L("Clean Notification")
+        )
         button.image = img?.withSymbolConfiguration(cfg)
         // Tint: red when alert, default otherwise.
         button.contentTintColor = alertActive ? NSColor.systemRed : nil
@@ -81,19 +84,22 @@ final class MenuBarController: NSObject {
                                   action: #selector(openMainWindowFromMenu),
                                   keyEquivalent: "d")
         openItem.keyEquivalentModifierMask = [.command, .shift]
-        openItem.toolTip = "Show the Clean Notification dashboard"
+        openItem.title = L("Open Dashboard…")
+        openItem.toolTip = L("Show the Clean Notification dashboard")
         openItem.target = self
         menu.addItem(openItem)
 
         let exportItem = NSMenuItem(title: "Export Last 24 Hours as CSV…",
                                     action: #selector(exportLast24h),
                                     keyEquivalent: "")
+        exportItem.title = L("Export Last 24 Hours as CSV…")
         exportItem.target = self
         menu.addItem(exportItem)
 
         let revealItem = NSMenuItem(title: "Reveal Data File in Finder",
                                     action: #selector(revealDataFile),
                                     keyEquivalent: "")
+        revealItem.title = L("Reveal Data File in Finder")
         revealItem.target = self
         menu.addItem(revealItem)
 
@@ -102,6 +108,7 @@ final class MenuBarController: NSObject {
         let demoItem = NSMenuItem(title: "Generate 30-Day Demo Data…",
                                   action: #selector(generateDemoData),
                                   keyEquivalent: "")
+        demoItem.title = L("Generate 30-Day Demo Data…")
         demoItem.target = self
         menu.addItem(demoItem)
 
@@ -110,6 +117,7 @@ final class MenuBarController: NSObject {
         let stressItem = NSMenuItem(title: "Run 30s CPU Stress Test…",
                                     action: #selector(runStressTest),
                                     keyEquivalent: "")
+        stressItem.title = L("Run 30s CPU Stress Test…")
         stressItem.target = self
         menu.addItem(stressItem)
 
@@ -117,6 +125,7 @@ final class MenuBarController: NSObject {
         let quitItem = NSMenuItem(title: "Quit",
                                   action: #selector(NSApplication.terminate(_:)),
                                   keyEquivalent: "q")
+        quitItem.title = L("Quit")
         quitItem.target = NSApp
         menu.addItem(quitItem)
         statusItem.menu = menu
@@ -163,8 +172,8 @@ final class MenuBarController: NSObject {
                     seed: cfg.seed
                 )
                 Notifier.shared.send(
-                    title: "Demo data ready",
-                    body: "Generated 30 days of synthetic samples. Open the dashboard to explore.",
+                    title: L("Demo data ready"),
+                    body: L("Generated 30 days of synthetic samples. Open the dashboard to explore."),
                     userInfo: [:]
                 )
             } catch {
@@ -175,15 +184,15 @@ final class MenuBarController: NSObject {
 
     @objc private func runStressTest() {
         Notifier.shared.send(
-            title: "Stress test running",
-            body: "Burning CPU for 30 seconds. Watch the temperature climb in the popover.",
+            title: L("Stress test running"),
+            body: L("Burning CPU for 30 seconds. Watch the temperature climb in the popover."),
             userInfo: [:]
         )
         DispatchQueue.global(qos: .userInitiated).async {
             StressTestRunner.run(durationSeconds: 30)
             Notifier.shared.send(
-                title: "Stress test done",
-                body: "30-second load complete. Check the dashboard for the temperature curve.",
+                title: L("Stress test done"),
+                body: L("30-second load complete. Check the dashboard for the temperature curve."),
                 userInfo: [:]
             )
         }

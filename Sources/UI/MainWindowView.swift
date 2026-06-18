@@ -29,12 +29,12 @@ struct MainWindowView: View {
 
         var title: String {
             switch self {
-            case .overview: return "Overview"
-            case .live:     return "Live"
-            case .history:  return "History"
-            case .heatmap:  return "Heatmap"
-            case .compare:  return "Compare"
-            case .settings: return "Settings"
+            case .overview: return L("Overview")
+            case .live:     return L("Live")
+            case .history:  return L("History")
+            case .heatmap:  return L("Heatmap")
+            case .compare:  return L("Compare")
+            case .settings: return L("Settings")
             }
         }
 

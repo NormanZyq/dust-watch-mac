@@ -20,7 +20,7 @@ struct PopoverView: View {
             HStack {
                 Image(systemName: "thermometer.medium")
                     .foregroundStyle(.tint)
-                Text("Clean Notification")
+                Text(L("Clean Notification"))
                     .font(.headline)
                 Spacer()
                 if samplerObserver.isDemoMode { DemoModeBadge() }
@@ -33,24 +33,24 @@ struct PopoverView: View {
             headlineLoadRow
 
             Divider()
-            metricRow(label: "CPU temp", value: sample?.cpuTempC, unit: "°C", tint: .orange)
-            metricRow(label: "GPU temp", value: sample?.gpuTempC, unit: "°C", tint: .blue)
-            metricRow(label: "Fan", value: sample?.maxFanRPM.map { Double($0) },
+            metricRow(label: L("CPU temp"), value: sample?.cpuTempC, unit: "°C", tint: .orange)
+            metricRow(label: L("GPU temp"), value: sample?.gpuTempC, unit: "°C", tint: .blue)
+            metricRow(label: L("Fan"), value: sample?.maxFanRPM.map { Double($0) },
                       unit: " RPM", tint: .green, isInt: true)
             Divider()
             VStack(alignment: .leading, spacing: 4) {
-                Text("Today peak")
+                Text(L("Today peak"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 HStack(spacing: 16) {
-                    miniStat(label: "CPU", value: todayPeakCPU)
-                    miniStat(label: "GPU", value: todayPeakGPU)
+                    miniStat(label: L("CPU"), value: todayPeakCPU)
+                    miniStat(label: L("GPU"), value: todayPeakGPU)
                 }
             }
             Spacer(minLength: 0)
             Button(action: onOpenMain) {
                 HStack {
-                    Text("Open Dashboard")
+                    Text(L("Open Dashboard"))
                     Spacer()
                     Text("⇧⌘T")
                         .font(.caption)
@@ -87,7 +87,7 @@ struct PopoverView: View {
         let load = sample?.cpuLoad ?? 0
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {
-                Text("CPU load")
+                Text(L("CPU load"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()

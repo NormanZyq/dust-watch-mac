@@ -23,48 +23,48 @@ struct ConfigView: View {
 
     var body: some View {
         Form {
-            Section("Sampling") {
+            Section(L("Sampling")) {
                 Stepper(value: $cfg.sampleIntervalSec, in: 10...600, step: 10) {
-                    LabeledContent("Interval") {
-                        Text("\(cfg.sampleIntervalSec) sec")
+                    LabeledContent(L("Interval")) {
+                        Text(String(format: L("%d sec"), cfg.sampleIntervalSec))
                             .monospacedDigit()
                     }
                 }
             }
 
-            Section("Thermal alert") {
+            Section(L("Thermal alert")) {
                 HStack {
-                    Text("Temperature rise threshold")
+                    Text(L("Temperature rise threshold"))
                     Spacer()
                     TextField("°C", value: $cfg.tempThresholdC, format: .number.precision(.fractionLength(1)))
                         .frame(width: 60).multilineTextAlignment(.trailing)
                         .textFieldStyle(.roundedBorder)
                 }
                 Stepper(value: $cfg.fanThresholdRPM, in: 0...3000, step: 100) {
-                    LabeledContent("Fan RPM rise") {
+                    LabeledContent(L("Fan RPM rise")) {
                         Text("\(cfg.fanThresholdRPM) RPM")
                             .monospacedDigit()
                     }
                 }
             }
 
-            Section("Comparison windows") {
+            Section(L("Comparison windows")) {
                 Stepper(value: $cfg.baselineDays, in: 7...180, step: 7) {
-                    LabeledContent("Baseline") {
-                        Text("\(cfg.baselineDays) days")
+                    LabeledContent(L("Baseline")) {
+                        Text(String(format: L("%d days"), cfg.baselineDays))
                             .monospacedDigit()
                     }
                 }
                 Stepper(value: $cfg.compareDays, in: 1...30, step: 1) {
-                    LabeledContent("Recent") {
-                        Text("\(cfg.compareDays) days")
+                    LabeledContent(L("Recent")) {
+                        Text(String(format: L("%d days"), cfg.compareDays))
                             .monospacedDigit()
                     }
                 }
             }
 
-            Section("Notifications") {
-                Toggle("Enable system notifications", isOn: $cfg.notificationsEnabled)
+            Section(L("Notifications")) {
+                Toggle(L("Enable system notifications"), isOn: $cfg.notificationsEnabled)
             }
 
             demoSection
@@ -73,16 +73,16 @@ struct ConfigView: View {
 
             Section {
                 HStack {
-                    Button("Save") {
+                    Button(L("Save")) {
                         save()
                     }
                     .keyboardShortcut(.defaultAction)
                     if let savedAt = savedAt {
-                        Text("Saved \(savedAt.formatted(date: .omitted, time: .shortened))")
+                        Text(String(format: L("Saved %@"), savedAt.formatted(date: .omitted, time: .shortened))
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Text("DB: \(Sampler.shared.databasePath)")
+                    Text(String(format: L("DB: %@"), Sampler.shared.databasePath))
                         .font(.caption2).foregroundStyle(.secondary)
                         .lineLimit(1).truncationMode(.middle)
                 }
@@ -111,10 +111,10 @@ struct ConfigView: View {
                     HStack {
                         Image(systemName: "wand.and.stars")
                             .foregroundStyle(.orange)
-                        Text("Use synthetic data (demo mode)")
+                        Text(L("Use synthetic data (demo mode)"))
                             .fontWeight(.medium)
                     }
-                    Text("Replaces SMC reads with a realistic generator. Useful when SMC isn't working on this macOS version, or to explore the app quickly.")
+                    Text(L("Replaces SMC reads with a realistic generator. Useful when SMC isn't working on this macOS version, or to explore the app quickly."))
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -125,15 +125,15 @@ struct ConfigView: View {
 
             if demoCfg.enabled {
                 Stepper(value: $demoCfg.daysOfData, in: 1...180, step: 7) {
-                    LabeledContent("Days of history to generate") {
-                        Text("\(demoCfg.daysOfData) days")
+                    LabeledContent(L("Days of history to generate")) {
+                        Text(String(format: L("%d days"), demoCfg.daysOfData))
                             .monospacedDigit()
                     }
                 }
                 .onChange(of: demoCfg.daysOfData) { _ in demoCfg.save() }
 
                 HStack {
-                    Stepper("Random seed", value: $demoCfg.seed, in: 0...9999)
+                    Stepper(L("Random seed"), value: $demoCfg.seed, in: 0...9999)
                         .onChange(of: demoCfg.seed) { _ in demoCfg.save() }
                 }
 
@@ -142,9 +142,10 @@ struct ConfigView: View {
                         generateDemoData()
                     } label: {
                         if generating {
-                            HStack { ProgressView().controlSize(.small); Text("Generating…") }
+                            HStack { ProgressView().controlSize(.small); Text(L("Generating…")) }
                         } else {
-                            Label("Generate \(demoCfg.daysOfData)-day history", systemImage: "calendar.badge.plus")
+                            Label(String(format: L("Generate %d-day history"), demoCfg.daysOfData),
+                                  systemImage: "calendar.badge.plus")
                         }
                     }
                     .disabled(generating || clearingData)
@@ -153,7 +154,7 @@ struct ConfigView: View {
                 if generating || !genMessage.isEmpty {
                     if generating {
                         ProgressView(value: genProgress) {
-                            Text("Inserting synthetic samples…")
+                            Text(L("Inserting synthetic samples…"))
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     } else {
@@ -163,9 +164,9 @@ struct ConfigView: View {
                 }
             }
         } header: {
-            Text("Demo data")
+            Text(L("Demo data"))
         } footer: {
-            Text("Demo data is real, but synthesized. Once SMC reads work, toggle this off and the app will use actual sensor data.")
+            Text(L("Demo data is real, but synthesized. Once SMC reads work, toggle this off and the app will use actual sensor data."))
                 .font(.caption2)
         }
     }
@@ -181,8 +182,8 @@ struct ConfigView: View {
         Section {
             // Live counts from the DB
             HStack(spacing: 24) {
-                dataCount(label: "Real",      n: realCount,      tint: .green)
-                dataCount(label: "Synthetic", n: syntheticCount, tint: .orange)
+                dataCount(label: L("Real"),      n: realCount,      tint: .green)
+                dataCount(label: L("Synthetic"), n: syntheticCount, tint: .orange)
             }
             .padding(.vertical, 4)
 
@@ -190,14 +191,14 @@ struct ConfigView: View {
                 Button {
                     clearSynthetic()
                 } label: {
-                    Label("Clear synthetic only", systemImage: "wand.and.stars.outline")
+                    Label(L("Clear synthetic only"), systemImage: "wand.and.stars.outline")
                 }
                 .disabled(syntheticCount == 0 || clearingData)
 
                 Button {
                     clearBeforeToday()
                 } label: {
-                    Label("Clear data before today", systemImage: "calendar.badge.minus")
+                    Label(L("Clear data before today"), systemImage: "calendar.badge.minus")
                 }
                 .disabled(clearingData)
             }
@@ -205,13 +206,13 @@ struct ConfigView: View {
             Button(role: .destructive) {
                 clearEverything()
             } label: {
-                Label("Clear all data", systemImage: "trash")
+                Label(L("Clear all data"), systemImage: "trash")
             }
             .disabled(clearingData)
         } header: {
-            Text("Data")
+            Text(L("Data"))
         } footer: {
-            Text("Use \"Clear synthetic only\" to remove demo data while keeping real SMC samples. \"Clear data before today\" wipes test data from previous days. \"Clear all data\" removes everything.")
+            Text(L("Use \"Clear synthetic only\" to remove demo data while keeping real SMC samples. \"Clear data before today\" wipes test data from previous days. \"Clear all data\" removes everything."))
                 .font(.caption2)
         }
     }
@@ -222,7 +223,7 @@ struct ConfigView: View {
                 Circle().fill(tint).frame(width: 8, height: 8)
                 Text(label).font(.caption).foregroundStyle(.secondary)
             }
-            Text("\(n) samples")
+            Text(String(format: L("%d samples"), n))
                 .font(.system(.title3, design: .rounded)).fontWeight(.medium)
                 .monospacedDigit()
         }
@@ -236,13 +237,13 @@ struct ConfigView: View {
                 try Sampler.shared.databaseHandle.clearSyntheticData()
                 DispatchQueue.main.async {
                     self.clearingData = false
-                    self.genMessage = "✓ Cleared synthetic data"
+                    self.genMessage = L("✓ Cleared synthetic data")
                     self.refreshCounts()
                 }
             } catch {
                 DispatchQueue.main.async {
                     self.clearingData = false
-                    self.genMessage = "✗ Clear failed: \(error.localizedDescription)"
+                    self.genMessage = String(format: L("✗ Clear failed: %@"), error.localizedDescription)
                 }
             }
         }
@@ -255,13 +256,13 @@ struct ConfigView: View {
                 try Sampler.shared.databaseHandle.clearBeforeToday()
                 DispatchQueue.main.async {
                     self.clearingData = false
-                    self.genMessage = "✓ Cleared data before today 00:00"
+                    self.genMessage = L("✓ Cleared data before today 00:00")
                     self.refreshCounts()
                 }
             } catch {
                 DispatchQueue.main.async {
                     self.clearingData = false
-                    self.genMessage = "✗ Clear failed: \(error.localizedDescription)"
+                    self.genMessage = String(format: L("✗ Clear failed: %@"), error.localizedDescription)
                 }
             }
         }
@@ -274,13 +275,13 @@ struct ConfigView: View {
                 try Sampler.shared.databaseHandle.clearAllSamples()
                 DispatchQueue.main.async {
                     self.clearingData = false
-                    self.genMessage = "✓ All data cleared"
+                    self.genMessage = L("✓ All data cleared")
                     self.refreshCounts()
                 }
             } catch {
                 DispatchQueue.main.async {
                     self.clearingData = false
-                    self.genMessage = "✗ Clear failed: \(error.localizedDescription)"
+                    self.genMessage = String(format: L("✗ Clear failed: %@"), error.localizedDescription)
                 }
             }
         }
@@ -328,13 +329,13 @@ struct ConfigView: View {
                 DispatchQueue.main.async {
                     self.generating = false
                     let totalSamples = cfg.daysOfData * 24 * 60
-                    self.genMessage = "✓ Generated \(totalSamples) synthetic samples"
+                    self.genMessage = String(format: L("✓ Generated %d synthetic samples"), totalSamples)
                     self.refreshCounts()
                 }
             } catch {
                 DispatchQueue.main.async {
                     self.generating = false
-                    self.genMessage = "✗ Generation failed: \(error.localizedDescription)"
+                    self.genMessage = String(format: L("✗ Generation failed: %@"), error.localizedDescription)
                 }
             }
         }

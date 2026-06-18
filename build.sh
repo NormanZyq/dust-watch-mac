@@ -89,6 +89,9 @@ cp "$ROOT/Sources/Resources/Info.plist" "$APP_DIR/Contents/Info.plist"
 cp "$ROOT/Sources/Resources/CleanNotificationMac.entitlements" \
    "$APP_DIR/Contents/Resources/CleanNotificationMac.entitlements"
 
+# Copy localized .lproj bundles.
+cp -R "$ROOT/Sources/Resources/"*.lproj "$APP_DIR/Contents/Resources/"
+
 # Copy app icon (.icns) into Contents/Resources so macOS picks it up
 # via CFBundleIconName in Info.plist. Skip silently if the icon was never
 # generated — the app will fall back to the generic app icon.

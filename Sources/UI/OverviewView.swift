@@ -113,15 +113,15 @@ struct OverviewView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack {
-                Text("Overview").font(.title2).fontWeight(.semibold)
+                Text(L("Overview")).font(.title2).fontWeight(.semibold)
                 if loading { ProgressView().controlSize(.small) }
                 Spacer()
                 if let sample = latestSample ?? Sampler.shared.latest {
-                    Text("Updated " + relativeTime(sample.timestamp))
+                    Text(String(format: L("Updated %@"), relativeTime(sample.timestamp)))
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
-            Text("Live summary of CPU/GPU temperature, fan activity, and recent trends.")
+            Text(L("Live summary of CPU/GPU temperature, fan activity, and recent trends."))
                 .font(.callout).foregroundStyle(.secondary)
         }
     }
@@ -138,8 +138,8 @@ struct OverviewView: View {
         HStack(alignment: .top, spacing: 12) {
             DemoModeBadge()
             VStack(alignment: .leading, spacing: 2) {
-                Text("Demo data is showing").font(.headline)
-                Text("Temperatures and fan RPM are synthesized, not from the SMC. Open Settings to turn this off (once SMC reads are working).")
+                Text(L("Demo data is showing")).font(.headline)
+                Text(L("Temperatures and fan RPM are synthesized, not from the SMC. Open Settings to turn this off (once SMC reads are working)."))
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
@@ -159,16 +159,24 @@ struct OverviewView: View {
                         .padding(6)
                         .background(.red, in: Circle())
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Thermal degradation detected")
+                        Text(L("Thermal degradation detected"))
                             .font(.headline).foregroundStyle(.red)
-                        Text("\(f.subsystem.rawValue) · load level \(f.cpuPState) · rise +\(String(format: "%.1f", f.riseDelta))°C vs baseline · p=\(String(format: "%.3f", f.pValue))")
+                        Text(String(
+                            format: L("%@ · load level %d · rise +%.1f°C vs baseline · p=%.3f"),
+                            f.subsystem.rawValue,
+                            f.cpuPState,
+                            f.riseDelta,
+                            f.pValue
+                        ))
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
                 }
                 Text(f.ambientCorrected
-                     ? "At the same workload, \(f.subsystem.rawValue) now runs hotter above its idle temperature than it used to — corrected for room-temperature changes. This often indicates dust buildup or aging thermal paste."
-                     : "Recent median \(f.subsystem.rawValue) temperature is significantly higher than the long-term baseline at the same workload. (No idle reference was available to correct for room temperature.)")
+                     ? String(format: L("At the same workload, %@ now runs hotter above its idle temperature than it used to — corrected for room-temperature changes. This often indicates dust buildup or aging thermal paste."),
+                              f.subsystem.rawValue)
+                     : String(format: L("Recent median %@ temperature is significantly higher than the long-term baseline at the same workload. (No idle reference was available to correct for room temperature.)"),
+                              f.subsystem.rawValue))
                     .font(.caption).foregroundStyle(.secondary)
             }
             .padding(14)
@@ -179,9 +187,9 @@ struct OverviewView: View {
                 HStack {
                     Image(systemName: "hourglass")
                         .foregroundStyle(.secondary)
-                    Text("Collecting data…").font(.headline)
+                    Text(L("Collecting data…")).font(.headline)
                 }
-                Text("The sampler is running. You'll see real numbers here within a minute, and trend information over the coming days.")
+                Text(L("The sampler is running. You'll see real numbers here within a minute, and trend information over the coming days."))
                     .font(.caption).foregroundStyle(.secondary)
             }
             .padding(14)
@@ -202,7 +210,7 @@ struct OverviewView: View {
     private var statCardGrid: some View {
         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
             statCard(
-                title: "Today · CPU peak",
+                title: L("Today · CPU peak"),
                 value: todayStats?.cpuTempPeak.map { String(format: "%.1f°C", $0) } ?? "—",
                 delta: deltaString(current: todayStats?.cpuTempPeak, previous: yesterdayStats?.cpuTempPeak),
                 icon: "thermometer.medium",
@@ -215,7 +223,7 @@ struct OverviewView: View {
                 warning: (todayStats?.cpuTempPeak ?? 0) >= 75
             )
             statCard(
-                title: "Today · GPU peak",
+                title: L("Today · GPU peak"),
                 value: todayStats?.gpuTempPeak.map { String(format: "%.1f°C", $0) } ?? "—",
                 delta: deltaString(current: todayStats?.gpuTempPeak, previous: yesterdayStats?.gpuTempPeak),
                 icon: "display",
@@ -228,7 +236,7 @@ struct OverviewView: View {
                 warning: (todayStats?.gpuTempPeak ?? 0) >= 75
             )
             statCard(
-                title: "Today · Fan peak",
+                title: L("Today · Fan peak"),
                 value: todayStats?.fanRpmPeak.map { "\($0) RPM" } ?? "—",
                 delta: deltaString(current: todayStats?.fanRpmAvg, previous: yesterdayStats?.fanRpmAvg, suffix: " RPM"),
                 icon: "fan.fill",
@@ -241,7 +249,7 @@ struct OverviewView: View {
                 warning: false
             )
             statCard(
-                title: "Above 70°C today",
+                title: L("Above 70°C today"),
                 value: "\(todayStats?.cpuMinutesAboveThreshold ?? 0) min",
                 delta: nil,
                 icon: "flame.fill",
@@ -326,11 +334,11 @@ struct OverviewView: View {
     /// converted to Double at the call site.
     private func sparklineCaption24h(_ getter: (HourlyStats) -> Double?) -> String {
         let values = hourly.compactMap(getter)
-        guard !values.isEmpty else { return "no data yet" }
+        guard !values.isEmpty else { return L("no data yet") }
         let lo = values.min()!
         let hi = values.max()!
         let avg = values.reduce(0, +) / Double(values.count)
-        return String(format: "24h range %.1f–%.1f  ·  avg %.1f", lo, hi, avg)
+        return String(format: L("24h range %.1f–%.1f  ·  avg %.1f"), lo, hi, avg)
     }
 
     /// Caption for the "Above 70°C" card: a textual breakdown of how
@@ -338,9 +346,9 @@ struct OverviewView: View {
     private var hourlyBarSummary: String {
         let hot = hourly.filter { ($0.cpuTempPeak ?? 0) >= 70 }.count
         if hot == 0 {
-            return "no hours ≥ 70°C in last 24h"
+            return L("no hours ≥ 70°C in last 24h")
         }
-        return "\(hot) of \(hourly.count) hours ≥ 70°C"
+        return String(format: L("%d hours · ≥ 70°C in 24h"), hot, hourly.count)
     }
 
     // MARK: - 24h interactive chart
@@ -355,7 +363,7 @@ struct OverviewView: View {
 
     private var sparklineCard: some View {
         ChartCard(
-            title: "Last 24 hours",
+            title: L("Last 24 hours"),
             trailing: AnyView(
                 SeriesToggleBar(
                     config: sparkConfigBinding,
@@ -367,9 +375,9 @@ struct OverviewView: View {
         ) {
             if hourly.isEmpty {
                 ContentUnavailableViewCompat(
-                    title: "No hourly data yet",
+                    title: L("No hourly data yet"),
                     systemImage: "chart.xyaxis.line",
-                    description: "Data is rolled up to hourly buckets after a few hours of running."
+                    description: L("Data is rolled up to hourly buckets after a few hours of running.")
                 )
                 .frame(height: 200)
             } else {
@@ -425,7 +433,7 @@ struct OverviewView: View {
                                 LineMark(
                                     x: .value("Hour", h.hour),
                                     y: .value("°C", v),
-                                    series: .value("Series", "CPU")
+                                    series: .value("Series", L("CPU"))
                                 )
                                 .foregroundStyle(.orange)
                                 .interpolationMethod(.monotone)
@@ -440,7 +448,7 @@ struct OverviewView: View {
                                 LineMark(
                                     x: .value("Hour", h.hour),
                                     y: .value("°C", v),
-                                    series: .value("Series", "GPU")
+                                    series: .value("Series", L("GPU"))
                                 )
                                 .foregroundStyle(.blue)
                                 .interpolationMethod(.monotone)
@@ -455,7 +463,7 @@ struct OverviewView: View {
                                 LineMark(
                                     x: .value("Hour", h.hour),
                                     y: .value("RPM", mapValue(rpm, from: secondaryDomain, to: primaryDomain)),
-                                    series: .value("Series", "Fan")
+                                    series: .value("Series", L("Fan"))
                                 )
                                 .foregroundStyle(.green)
                                 .interpolationMethod(.monotone)
@@ -471,7 +479,7 @@ struct OverviewView: View {
                             .foregroundStyle(.red.opacity(0.45))
                             .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
                             .annotation(position: .top, alignment: .leading, spacing: 2) {
-                                Text("75°C")
+                                Text(L("75°C"))
                                     .font(.caption2)
                                     .foregroundStyle(.red.opacity(0.7))
                             }
@@ -492,16 +500,16 @@ struct OverviewView: View {
     ) -> [HoverRow] {
         var rows: [HoverRow] = []
         if sparkConfig.showCPUTemp {
-            rows.append(HoverRow(label: "CPU peak", color: .orange, value: h.cpuTempPeak))
-            rows.append(HoverRow(label: "CPU avg",  color: .orange.opacity(0.85), value: h.cpuTempAvg))
-            rows.append(HoverRow(label: "CPU min",  color: .orange.opacity(0.55), value: h.cpuTempMin))
+            rows.append(HoverRow(label: L("CPU peak"), color: .orange, value: h.cpuTempPeak))
+            rows.append(HoverRow(label: L("CPU avg"),  color: .orange.opacity(0.85), value: h.cpuTempAvg))
+            rows.append(HoverRow(label: L("CPU min"),  color: .orange.opacity(0.55), value: h.cpuTempMin))
         }
         if sparkConfig.showGPUTemp {
-            rows.append(HoverRow(label: "GPU avg",  color: .blue, value: h.gpuTempAvg))
+            rows.append(HoverRow(label: L("GPU avg"),  color: .blue, value: h.gpuTempAvg))
         }
         if sparkConfig.showFanRPM {
             rows.append(HoverRow(
-                label: "Fan RPM",
+                label: L("Fan RPM"),
                 color: .green,
                 plotValue: h.fanRpmPeak.map {
                     mapValue(Double($0), from: secondaryDomain, to: primaryDomain)
@@ -523,17 +531,17 @@ struct OverviewView: View {
 
     private var weeklyTrendCard: some View {
         ChartCard(
-            title: "Last 7 days · daily peak CPU",
+            title: L("Last 7 days · daily peak CPU"),
             trailing: AnyView(
-                Text("hover or click a bar")
+                Text(L("hover or click a bar"))
                     .font(.caption2).foregroundStyle(.secondary)
             )
         ) {
             if last7Days.isEmpty {
                 ContentUnavailableViewCompat(
-                    title: "Not enough data yet",
+                    title: L("Not enough data yet"),
                     systemImage: "calendar",
-                    description: "After a week of running, you'll see a daily trend here."
+                    description: L("After a week of running, you'll see a daily trend here.")
                 )
                 .frame(height: 180)
             } else {
@@ -587,13 +595,13 @@ struct OverviewView: View {
     /// Tooltip rows for the 7-day chart.
     private func weeklyTrendRows(_ d: DailyStats) -> [HoverRow] {
         [
-            HoverRow(label: "CPU peak", color: .orange, value: d.cpuTempPeak),
-            HoverRow(label: "CPU avg",  color: .orange.opacity(0.85), value: d.cpuTempAvg),
-            HoverRow(label: "CPU min",  color: .orange.opacity(0.55), value: d.cpuTempMin),
-            HoverRow(label: "GPU peak", color: .blue,   value: d.gpuTempPeak),
-            HoverRow(label: "Fan peak", color: .green,  value: d.fanRpmPeak.map { Double($0) },
+            HoverRow(label: L("CPU peak"), color: .orange, value: d.cpuTempPeak),
+            HoverRow(label: L("CPU avg"),  color: .orange.opacity(0.85), value: d.cpuTempAvg),
+            HoverRow(label: L("CPU min"),  color: .orange.opacity(0.55), value: d.cpuTempMin),
+            HoverRow(label: L("GPU peak"), color: .blue,   value: d.gpuTempPeak),
+            HoverRow(label: L("Fan peak"), color: .green,  value: d.fanRpmPeak.map { Double($0) },
                      unit: " RPM", fractionDigits: 0),
-            HoverRow(label: "Samples",  color: .secondary,
+            HoverRow(label: L("Samples"),  color: .secondary,
                      value: Double(d.sampleCount), unit: "", fractionDigits: 0),
         ]
     }
@@ -666,7 +674,8 @@ struct OverviewView: View {
         guard let c = current, let p = previous, p != 0 else { return nil }
         let delta = c - p
         let arrow = delta > 0.1 ? "▲" : (delta < -0.1 ? "▼" : "•")
-        return "\(arrow) \(String(format: "%+.1f", delta))\(suffix) vs yesterday"
+        let arrowDelta = String(format: "%+.1f", delta)
+        return "\(arrow) \(arrowDelta) \(suffix) \(L("vs yesterday"))"
     }
 
     private func deltaColor(_ s: String) -> Color {

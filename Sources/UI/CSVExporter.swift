@@ -23,8 +23,8 @@ enum CSVExporter {
         df.dateFormat = "yyyyMMdd-HHmm"
         let defaultName = "clean-notification-\(df.string(from: Date())).csv"
         panel.nameFieldStringValue = defaultName
-        panel.title = "Export samples"
-        panel.message = "Export temperature and fan data as CSV."
+        panel.title = L("Export samples")
+        panel.message = L("Export temperature and fan data as CSV.")
 
         let response = panel.runModal()
         guard response == .OK, let url = panel.url else { return nil }

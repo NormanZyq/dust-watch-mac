@@ -21,7 +21,7 @@ final class WindowManager {
         let view = MainWindowView()
         let host = NSHostingController(rootView: view)
         let w = NSWindow(contentViewController: host)
-        w.title = "Clean Notification"
+        w.title = L("Clean Notification")
         w.setContentSize(NSSize(width: 880, height: 620))
         w.minSize = NSSize(width: 720, height: 480)
         w.styleMask = [.titled, .closable, .miniaturizable, .resizable]

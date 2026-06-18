@@ -47,7 +47,7 @@ final class AlertReporter {
             let summary = format(finding: finding, config: cfg)
             try database.recordAlert(kind: alertKind, details: summary)
             notifier.send(
-                title: "Possible thermal degradation detected",
+                title: L("Possible thermal degradation detected"),
                 body: summary,
                 userInfo: ["findingTempDelta": finding.tempDelta]
             )
@@ -63,7 +63,7 @@ final class AlertReporter {
             // The headline is the ambient-corrected rise-above-idle growth,
             // which is what actually indicates reduced cooling capacity.
             tempLine = String(
-                format: "%@ temperature rise over idle, at load level %d, grew by %.1f°C over the "
+                format: L("%@ temperature rise over idle, at load level %d, grew by %.1f°C over the "
                       + "last %d days versus the %d-day baseline (now +%.1f°C above idle, was +%.1f°C; "
                       + "p = %.3f). This is corrected for room-temperature changes.",
                 sub, f.cpuPState, f.riseDelta,
@@ -72,7 +72,7 @@ final class AlertReporter {
             )
         } else {
             tempLine = String(
-                format: "%@ median temperature at load level %d is %.1f°C in the last %d days — "
+                format: L("%@ median temperature at load level %d is %.1f°C in the last %d days — "
                       + "%.1f°C higher than the %d-day baseline (p = %.3f). Note: no idle reference "
                       + "was available, so this is not corrected for room-temperature changes.",
                 sub, f.cpuPState, f.recentMedian,
@@ -81,8 +81,8 @@ final class AlertReporter {
         }
         let fanLine: String
         if f.fanDelta > 50 {
-            fanLine = String(
-                format: " Fan RPM at this load also rose from %.0f to %.0f (+%.0f RPM), consistent "
+            fanLine = " " + String(
+                format: L("%@ Fan RPM at this load also rose from %.0f to %.0f (+%.0f RPM), consistent "
                       + "with the cooling system working harder to hold the same temperature.",
                 f.fanBaselineMean, f.fanRecentMean, f.fanDelta
             )
