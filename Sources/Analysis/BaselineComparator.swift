@@ -74,16 +74,54 @@ struct ThermalFinding: Equatable {
     let recentCount: Int
 }
 
+struct DustRiskAssessment: Equatable {
+    enum Level: Equatable {
+        case insufficientData
+        case none
+        case minor
+        case needsCleaning
+    }
+
+    let level: Level
+    let evidence: ThermalFinding?
+    let baselineSampleCount: Int
+    let recentSampleCount: Int
+    let requiredSamplesPerWindow: Int
+    let baselineCoverage: Double
+    let recentCoverage: Double
+}
+
 enum BaselineComparator {
 
     // Load is bucketed into this many levels (0..N-1) by round(load*(N-1)).
     // Matches the synthetic generator and the Sampler's P-State derivation.
     private static let loadBuckets = 9      // 0..8
     private static let minSamplesPerBucket = 30
+    private static let minWindowCoverage = 0.65
+
+    private struct WorkloadBucket: Hashable, Comparable {
+        let primary: Int
+        let secondary: Int
+
+        static func < (lhs: WorkloadBucket, rhs: WorkloadBucket) -> Bool {
+            if lhs.primary != rhs.primary { return lhs.primary < rhs.primary }
+            return lhs.secondary < rhs.secondary
+        }
+    }
 
     /// Run the comparison and return the single most-significant finding
     /// (largest ambient-corrected rise delta) across CPU and GPU, or nil.
     static func run(database: Database, config: Config) throws -> ThermalFinding? {
+        let assessment = try assessDustRisk(database: database, config: config)
+        guard assessment.level == .needsCleaning else { return nil }
+        return assessment.evidence
+    }
+
+    /// Return a dashboard-friendly risk assessment without changing the
+    /// notification policy. Only `.needsCleaning` maps to an alertable finding;
+    /// `.minor` is a significant but below-threshold shift shown as early
+    /// warning context in the Overview tab.
+    static func assessDustRisk(database: Database, config: Config) throws -> DustRiskAssessment {
         let now = Int64(Date().timeIntervalSince1970)
         let baselineStart = now - Int64((config.baselineDays + config.compareDays)) * 86400
         let baselineEnd   = now - Int64(config.compareDays) * 86400
@@ -95,33 +133,95 @@ enum BaselineComparator {
         let baseline = try database.fetchRawSamplesForAnalysis(from: baselineStart, to: baselineEnd)
         let recent   = try database.fetchRawSamplesForAnalysis(from: recentStart,   to: recentEnd)
 
-        let cpuFinding = analyze(
+        let required = minSamplesPerBucket * 2
+        let baselineCoverage = windowCoverage(samples: baseline, from: baselineStart, to: baselineEnd)
+        let recentCoverage = windowCoverage(samples: recent, from: recentStart, to: recentEnd)
+        guard baseline.count >= required,
+              recent.count >= required,
+              baselineCoverage >= minWindowCoverage,
+              recentCoverage >= minWindowCoverage else {
+            return DustRiskAssessment(
+                level: .insufficientData,
+                evidence: nil,
+                baselineSampleCount: baseline.count,
+                recentSampleCount: recent.count,
+                requiredSamplesPerWindow: required,
+                baselineCoverage: baselineCoverage,
+                recentCoverage: recentCoverage
+            )
+        }
+
+        let cpuCandidates = analyzeCandidates(
             subsystem: .cpu,
             baseline: baseline, recent: recent, config: config,
-            load: { $0.cpuLoad }, temp: { $0.cpuTempC }
+            primaryLoad: { $0.cpuLoad },
+            secondaryLoad: { $0.gpuLoad },
+            temp: { $0.cpuTempC }
         )
-        let gpuFinding = analyze(
+        let gpuCandidates = analyzeCandidates(
             subsystem: .gpu,
             baseline: baseline, recent: recent, config: config,
-            load: { $0.gpuLoad }, temp: { $0.gpuTempC }
+            primaryLoad: { $0.gpuLoad },
+            secondaryLoad: { $0.cpuLoad },
+            temp: { $0.gpuTempC }
         )
+        let candidates = cpuCandidates + gpuCandidates
 
-        // Return the more significant of the two (largest corrected rise).
-        return [cpuFinding, gpuFinding]
-            .compactMap { $0 }
-            .max { $0.riseDelta < $1.riseDelta }
+        if let alertable = candidates
+            .filter({ isAlertable($0, config: config) })
+            .max(by: { $0.riseDelta < $1.riseDelta })
+        {
+            return DustRiskAssessment(
+                level: .needsCleaning,
+                evidence: alertable,
+                baselineSampleCount: baseline.count,
+                recentSampleCount: recent.count,
+                requiredSamplesPerWindow: required,
+                baselineCoverage: baselineCoverage,
+                recentCoverage: recentCoverage
+            )
+        }
+
+        if let minor = candidates
+            .filter({ isMinorRisk($0, config: config) })
+            .max(by: { $0.riseDelta < $1.riseDelta })
+        {
+            return DustRiskAssessment(
+                level: .minor,
+                evidence: minor,
+                baselineSampleCount: baseline.count,
+                recentSampleCount: recent.count,
+                requiredSamplesPerWindow: required,
+                baselineCoverage: baselineCoverage,
+                recentCoverage: recentCoverage
+            )
+        }
+
+        return DustRiskAssessment(
+            level: .none,
+            evidence: nil,
+            baselineSampleCount: baseline.count,
+            recentSampleCount: recent.count,
+            requiredSamplesPerWindow: required,
+            baselineCoverage: baselineCoverage,
+            recentCoverage: recentCoverage
+        )
     }
 
     // MARK: - Core analysis for one subsystem
 
-    private static func analyze(
+    private static func analyzeCandidates(
         subsystem: ThermalFinding.Subsystem,
         baseline: [Sample], recent: [Sample], config: Config,
-        load: (Sample) -> Double?, temp: (Sample) -> Double?
-    ) -> ThermalFinding? {
+        primaryLoad: (Sample) -> Double?,
+        secondaryLoad: (Sample) -> Double?,
+        temp: (Sample) -> Double?
+    ) -> [ThermalFinding] {
 
-        let baseBuckets = bucketByLoad(baseline, load: load, temp: temp)
-        let recBuckets  = bucketByLoad(recent,   load: load, temp: temp)
+        let baseBuckets = bucketByLoad(
+            baseline, primaryLoad: primaryLoad, secondaryLoad: secondaryLoad, temp: temp)
+        let recBuckets  = bucketByLoad(
+            recent, primaryLoad: primaryLoad, secondaryLoad: secondaryLoad, temp: temp)
 
         // Idle reference = the lowest populated bucket present in BOTH
         // windows. Its median temperature stands in for "ambient + idle
@@ -129,21 +229,23 @@ enum BaselineComparator {
         guard let idleBucket = lowestSharedBucket(baseBuckets, recBuckets) else {
             // No common idle reference → cannot ambient-correct. Fall back to
             // an absolute-temperature comparison at the worst shared bucket.
-            return absoluteFallback(
+            return absoluteFallbackCandidates(
                 subsystem: subsystem,
                 baseBuckets: baseBuckets, recBuckets: recBuckets,
-                baseline: baseline, recent: recent, config: config, load: load
+                baseline: baseline, recent: recent, config: config,
+                primaryLoad: primaryLoad,
+                secondaryLoad: secondaryLoad
             )
         }
 
         let baseIdleMed = median(baseBuckets[idleBucket] ?? [])
         let recIdleMed  = median(recBuckets[idleBucket] ?? [])
 
-        var best: ThermalFinding? = nil
+        var candidates: [ThermalFinding] = []
 
         // Compare every loaded bucket (above idle) shared by both windows.
         let sharedBuckets = Set(baseBuckets.keys).intersection(recBuckets.keys)
-            .filter { $0 > idleBucket }
+            .filter { $0.primary > idleBucket.primary }
             .sorted()
 
         for b in sharedBuckets {
@@ -166,15 +268,13 @@ enum BaselineComparator {
 
             // Fan evidence at this bucket.
             let (fanBase, fanRec, fanDelta) = fanStats(
-                baseline: baseline, recent: recent, bucket: b, load: load)
-
-            let tempTriggered = p < 0.05 && riseDelta >= config.tempThresholdC
-            let fanTriggered  = p < 0.05 && fanDelta  >= Double(config.fanThresholdRPM)
-            guard tempTriggered || fanTriggered else { continue }
+                baseline: baseline, recent: recent, bucket: b,
+                primaryLoad: primaryLoad,
+                secondaryLoad: secondaryLoad)
 
             let candidate = ThermalFinding(
                 subsystem: subsystem,
-                cpuPState: b,
+                cpuPState: b.primary,
                 baselineMedian: median(baseTemps),
                 recentMedian:   median(recTemps),
                 baselineRise:   baseRiseMed,
@@ -189,11 +289,9 @@ enum BaselineComparator {
                 baselineCount:   baseTemps.count,
                 recentCount:     recTemps.count
             )
-            if best == nil || candidate.riseDelta > best!.riseDelta {
-                best = candidate
-            }
+            candidates.append(candidate)
         }
-        return best
+        return candidates
     }
 
     // MARK: - Absolute-temperature fallback
@@ -203,14 +301,15 @@ enum BaselineComparator {
     // absolute temperatures at the worst shared bucket and flag the finding
     // as NOT ambient-corrected so the UI/alert can soften the wording.
 
-    private static func absoluteFallback(
+    private static func absoluteFallbackCandidates(
         subsystem: ThermalFinding.Subsystem,
-        baseBuckets: [Int: [Double]], recBuckets: [Int: [Double]],
+        baseBuckets: [WorkloadBucket: [Double]], recBuckets: [WorkloadBucket: [Double]],
         baseline: [Sample], recent: [Sample], config: Config,
-        load: (Sample) -> Double?
-    ) -> ThermalFinding? {
+        primaryLoad: (Sample) -> Double?,
+        secondaryLoad: (Sample) -> Double?
+    ) -> [ThermalFinding] {
         let shared = Set(baseBuckets.keys).intersection(recBuckets.keys).sorted()
-        var best: ThermalFinding? = nil
+        var candidates: [ThermalFinding] = []
         for b in shared {
             let baseTemps = baseBuckets[b] ?? []
             let recTemps  = recBuckets[b]  ?? []
@@ -223,15 +322,13 @@ enum BaselineComparator {
             let u = mannWhitneyU(baseTemps, recTemps)
             let p = mannWhitneyPValue(U: u, n1: baseTemps.count, n2: recTemps.count)
             let (fanBase, fanRec, fanDelta) = fanStats(
-                baseline: baseline, recent: recent, bucket: b, load: load)
-
-            let tempTriggered = p < 0.05 && delta >= config.tempThresholdC
-            let fanTriggered  = p < 0.05 && fanDelta >= Double(config.fanThresholdRPM)
-            guard tempTriggered || fanTriggered else { continue }
+                baseline: baseline, recent: recent, bucket: b,
+                primaryLoad: primaryLoad,
+                secondaryLoad: secondaryLoad)
 
             let candidate = ThermalFinding(
                 subsystem: subsystem,
-                cpuPState: b,
+                cpuPState: b.primary,
                 baselineMedian: baseMed,
                 recentMedian:   recMed,
                 baselineRise:   0,
@@ -246,25 +343,44 @@ enum BaselineComparator {
                 baselineCount:   baseTemps.count,
                 recentCount:     recTemps.count
             )
-            if best == nil || candidate.tempDelta > best!.tempDelta {
-                best = candidate
-            }
+            candidates.append(candidate)
         }
-        return best
+        return candidates
+    }
+
+    private static func isAlertable(_ finding: ThermalFinding, config: Config) -> Bool {
+        let tempTriggered = finding.pValue < 0.05 && finding.tempDelta >= config.tempThresholdC
+        let fanTriggered = finding.pValue < 0.05 && finding.fanDelta >= Double(config.fanThresholdRPM)
+        return tempTriggered || fanTriggered
+    }
+
+    private static func isMinorRisk(_ finding: ThermalFinding, config: Config) -> Bool {
+        let tempFloor = max(1.0, config.tempThresholdC * 0.5)
+        let fanFloor = max(150.0, Double(config.fanThresholdRPM) * 0.5)
+        let tempShift = finding.tempDelta >= tempFloor
+        let fanShift = finding.fanDelta >= fanFloor
+        return finding.pValue < 0.05 && (tempShift || fanShift)
     }
 
     // MARK: - Bucketing helpers
 
-    /// Group a subsystem's temperatures by its load bucket. Samples missing
-    /// either the load or the temperature are skipped.
+    /// Group temperatures by the subsystem's own load and the other major
+    /// subsystem's load. This keeps GPU-heavy game sessions from being
+    /// compared against CPU-only baseline samples in the same CPU bucket.
     private static func bucketByLoad(
         _ samples: [Sample],
-        load: (Sample) -> Double?, temp: (Sample) -> Double?
-    ) -> [Int: [Double]] {
-        var out: [Int: [Double]] = [:]
+        primaryLoad: (Sample) -> Double?,
+        secondaryLoad: (Sample) -> Double?,
+        temp: (Sample) -> Double?
+    ) -> [WorkloadBucket: [Double]] {
+        var out: [WorkloadBucket: [Double]] = [:]
         for s in samples {
-            guard let l = load(s), let t = temp(s) else { continue }
-            let bucket = loadBucket(l)
+            guard let primary = primaryLoad(s), let t = temp(s) else { continue }
+            let secondary = secondaryLoad(s) ?? 0
+            let bucket = WorkloadBucket(
+                primary: loadBucket(primary),
+                secondary: loadBucket(secondary)
+            )
             out[bucket, default: []].append(t)
         }
         return out
@@ -278,8 +394,8 @@ enum BaselineComparator {
     /// Lowest bucket index present in both windows with enough samples to be
     /// a stable idle reference.
     private static func lowestSharedBucket(
-        _ a: [Int: [Double]], _ b: [Int: [Double]]
-    ) -> Int? {
+        _ a: [WorkloadBucket: [Double]], _ b: [WorkloadBucket: [Double]]
+    ) -> WorkloadBucket? {
         Set(a.keys).intersection(b.keys)
             .filter { (a[$0]?.count ?? 0) >= minSamplesPerBucket
                    && (b[$0]?.count ?? 0) >= minSamplesPerBucket }
@@ -289,11 +405,19 @@ enum BaselineComparator {
     /// Mean fan RPM at a given load bucket in each window, and the delta.
     private static func fanStats(
         baseline: [Sample], recent: [Sample],
-        bucket: Int, load: (Sample) -> Double?
+        bucket: WorkloadBucket,
+        primaryLoad: (Sample) -> Double?,
+        secondaryLoad: (Sample) -> Double?
     ) -> (base: Double, rec: Double, delta: Double) {
         func meanFan(_ samples: [Sample]) -> Double {
             let fans = samples.compactMap { s -> Int? in
-                guard let l = load(s), loadBucket(l) == bucket else { return nil }
+                guard let primary = primaryLoad(s) else { return nil }
+                let secondary = secondaryLoad(s) ?? 0
+                let sampleBucket = WorkloadBucket(
+                    primary: loadBucket(primary),
+                    secondary: loadBucket(secondary)
+                )
+                guard sampleBucket == bucket else { return nil }
                 guard let f = s.maxFanRPM, f > 0 else { return nil }
                 return f
             }
@@ -302,6 +426,15 @@ enum BaselineComparator {
         let base = meanFan(baseline)
         let rec  = meanFan(recent)
         return (base, rec, rec - base)
+    }
+
+    private static func windowCoverage(samples: [Sample], from start: Int64, to end: Int64) -> Double {
+        guard let first = samples.first?.timestamp.timeIntervalSince1970,
+              let last = samples.last?.timestamp.timeIntervalSince1970,
+              end > start else {
+            return 0
+        }
+        return max(0, min(1, (last - first) / Double(end - start)))
     }
 
     // MARK: - Math helpers

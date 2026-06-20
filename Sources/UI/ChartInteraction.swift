@@ -401,23 +401,6 @@ struct InteractiveChart<DataPoint: Identifiable, Content: ChartContent>: View {
     var body: some View {
         Chart {
             chartContent()
-
-            // Dots snapped to nearest data point — show values.
-            if let idx = hover.hoveredIndex,
-               data.indices.contains(idx) {
-                let point = data[idx]
-                let x = point[keyPath: dateKey]
-                ForEach(Array(rowsForPoint(point).enumerated()), id: \.element.id) { _, row in
-                    if let val = row.plotValue {
-                        PointMark(
-                            x: .value("hover", x),
-                            y: .value("y", val)
-                        )
-                        .foregroundStyle(row.color)
-                        .symbolSize(70)
-                    }
-                }
-            }
         }
         .chartOverlay { proxy in
             GeometryReader { geo in
@@ -455,6 +438,26 @@ struct InteractiveChart<DataPoint: Identifiable, Content: ChartContent>: View {
                             }
                             .stroke(Color.primary.opacity(0.3),
                                     style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                            .allowsHitTesting(false)
+                        }
+                    }
+                    .overlay(alignment: .topLeading) {
+                        if let idx = hover.hoveredIndex,
+                           data.indices.contains(idx) {
+                            let point = data[idx]
+                            let x = plotFrame.minX + (proxy.position(forX: point[keyPath: dateKey]) ?? 0)
+                            ZStack {
+                                ForEach(Array(rowsForPoint(point).enumerated()), id: \.element.id) { _, row in
+                                    if let val = row.plotValue,
+                                       let y = proxy.position(forY: val) {
+                                        Circle()
+                                            .fill(row.color)
+                                            .frame(width: 8, height: 8)
+                                            .overlay(Circle().stroke(.background, lineWidth: 1.5))
+                                            .position(x: x, y: plotFrame.minY + y)
+                                    }
+                                }
+                            }
                             .allowsHitTesting(false)
                         }
                     }
@@ -554,22 +557,6 @@ struct DualAxisChart<DataPoint: Identifiable, Content: ChartContent>: View {
     var body: some View {
         Chart {
             chartContent()
-
-            if let idx = hover.hoveredIndex,
-               data.indices.contains(idx) {
-                let point = data[idx]
-                let x = point[keyPath: dateKey]
-                ForEach(Array(rowsForPoint(point).enumerated()), id: \.element.id) { _, row in
-                    if let val = row.plotValue {
-                        PointMark(
-                            x: .value("hover", x),
-                            y: .value("y", val)
-                        )
-                        .foregroundStyle(row.color)
-                        .symbolSize(70)
-                    }
-                }
-            }
         }
         .chartYScale(domain: primaryDomain.lowerBound...primaryDomain.upperBound)
         .chartYAxis {
@@ -640,6 +627,26 @@ struct DualAxisChart<DataPoint: Identifiable, Content: ChartContent>: View {
                             }
                             .stroke(Color.primary.opacity(0.3),
                                     style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                            .allowsHitTesting(false)
+                        }
+                    }
+                    .overlay(alignment: .topLeading) {
+                        if let idx = hover.hoveredIndex,
+                           data.indices.contains(idx) {
+                            let point = data[idx]
+                            let x = plotFrame.minX + (proxy.position(forX: point[keyPath: dateKey]) ?? 0)
+                            ZStack {
+                                ForEach(Array(rowsForPoint(point).enumerated()), id: \.element.id) { _, row in
+                                    if let val = row.plotValue,
+                                       let y = proxy.position(forY: val) {
+                                        Circle()
+                                            .fill(row.color)
+                                            .frame(width: 8, height: 8)
+                                            .overlay(Circle().stroke(.background, lineWidth: 1.5))
+                                            .position(x: x, y: plotFrame.minY + y)
+                                    }
+                                }
+                            }
                             .allowsHitTesting(false)
                         }
                     }

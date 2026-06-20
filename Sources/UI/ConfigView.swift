@@ -10,6 +10,7 @@ import SwiftUI
 struct ConfigView: View {
     @State private var cfg: Config = Sampler.shared.config
     @State private var savedAt: Date?
+    @State private var showResetConfirmation = false
 
     @State private var demoCfg: SyntheticConfig = SyntheticConfig.load()
     @State private var generating: Bool = false
@@ -72,17 +73,24 @@ struct ConfigView: View {
             dataSection
 
             Section {
-                HStack {
-                    Button(L("Save")) {
-                        save()
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        if let savedAt = savedAt {
+                            let savedText = String(format: L("Auto-saved %@"), savedAt.formatted(date: .omitted, time: .shortened))
+                            Text(savedText)
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            Text(L("Settings save automatically."))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button(role: .destructive) {
+                            showResetConfirmation = true
+                        } label: {
+                            Label(L("Reset Settings"), systemImage: "arrow.counterclockwise")
+                        }
                     }
-                    .keyboardShortcut(.defaultAction)
-                    if let savedAt = savedAt {
-                        let savedText = String(format: L("Saved %@"), savedAt.formatted(date: .omitted, time: .shortened))
-                        Text(savedText)
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
+
                     Text(String(format: L("DB: %@"), Sampler.shared.databasePath))
                         .font(.caption2).foregroundStyle(.secondary)
                         .lineLimit(1).truncationMode(.middle)
@@ -92,6 +100,15 @@ struct ConfigView: View {
         .formStyle(.grouped)
         .padding(.horizontal, 4)
         .onAppear { refreshCounts() }
+        .onChange(of: cfg) { _ in save() }
+        .alert(L("Reset Settings?"), isPresented: $showResetConfirmation) {
+            Button(L("Cancel"), role: .cancel) { }
+            Button(L("Reset"), role: .destructive) {
+                resetSettings()
+            }
+        } message: {
+            Text(L("This restores sampling, alert thresholds, comparison windows, and notification settings to their defaults."))
+        }
     }
 
     // MARK: - Demo data section
@@ -309,6 +326,11 @@ struct ConfigView: View {
         } catch {
             NSLog("ConfigView save failed: \(error.localizedDescription)")
         }
+    }
+
+    private func resetSettings() {
+        cfg = Config()
+        save()
     }
 
     // MARK: - Demo actions

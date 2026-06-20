@@ -342,6 +342,32 @@ struct ChartsView: View {
         )
     }
 
+    private func displaySamples(_ source: [Sample], maxPoints: Int) -> [Sample] {
+        guard maxPoints > 0, source.count > maxPoints else { return source }
+        let chunkSize = Int(ceil(Double(source.count) / Double(maxPoints)))
+        return stride(from: 0, to: source.count, by: chunkSize).map { start in
+            let end = min(start + chunkSize, source.count)
+            let chunk = Array(source[start..<end])
+            let middle = chunk[chunk.count / 2]
+            return Sample(
+                timestamp: middle.timestamp,
+                cpuTempC: average(chunk.compactMap(\.cpuTempC)),
+                gpuTempC: average(chunk.compactMap(\.gpuTempC)),
+                cpuFreqGHz: average(chunk.compactMap(\.cpuFreqGHz)),
+                cpuLoad: average(chunk.compactMap(\.cpuLoad)),
+                gpuLoad: average(chunk.compactMap(\.gpuLoad)),
+                cpuPState: chunk.flatMap(\.cpuPState).max().map { [$0] } ?? [],
+                fanRPMs: chunk.compactMap(\.maxFanRPM).max().map { [$0] } ?? [],
+                source: middle.source
+            )
+        }
+    }
+
+    private func average(_ values: [Double]) -> Double? {
+        guard !values.isEmpty else { return nil }
+        return values.reduce(0, +) / Double(values.count)
+    }
+
     private var isEmpty: Bool {
         switch (mode, aggregation) {
         case (.live, _):             return samples.isEmpty
@@ -361,10 +387,11 @@ struct ChartsView: View {
     // value at that minute plus the fan RPM if the sample had one.
 
     private var liveChart: some View {
-        let primaryDomain = rawPrimaryDomain(samples)
-        let secondaryDomain = rawSecondaryDomain(samples)
+        let chartSamples = displaySamples(samples, maxPoints: 360)
+        let primaryDomain = rawPrimaryDomain(chartSamples)
+        let secondaryDomain = rawSecondaryDomain(chartSamples)
         return DualAxisChart(
-            data: samples,
+            data: chartSamples,
             dateKey: \.timestamp,
             rowsForPoint: { liveRows($0, primaryDomain: primaryDomain, secondaryDomain: secondaryDomain) },
             dateLabel: liveDateLabel,
@@ -375,7 +402,7 @@ struct ChartsView: View {
         ) {
             // CPU line + soft min-max band (only when CPU temp is on)
             if seriesConfig.showCPUTemp {
-                ForEach(samples) { s in
+                ForEach(chartSamples) { s in
                     if let lo = s.cpuTempC, let hi = s.cpuTempC, hi > lo + 0.5 {
                         AreaMark(
                             x: .value("Time", s.timestamp),
@@ -386,7 +413,7 @@ struct ChartsView: View {
                         .interpolationMethod(.monotone)
                     }
                 }
-                ForEach(samples) { s in
+                ForEach(chartSamples) { s in
                     if let v = s.cpuTempC {
                         LineMark(
                             x: .value("Time", s.timestamp),
@@ -401,7 +428,7 @@ struct ChartsView: View {
             }
 
             if seriesConfig.showGPUTemp {
-                ForEach(samples) { s in
+                ForEach(chartSamples) { s in
                     if let v = s.gpuTempC {
                         LineMark(
                             x: .value("Time", s.timestamp),
@@ -416,7 +443,7 @@ struct ChartsView: View {
             }
 
             if seriesConfig.showFanRPM {
-                ForEach(samples) { s in
+                ForEach(chartSamples) { s in
                     if let rpm = s.maxFanRPM.map({ Double($0) }) {
                         LineMark(
                             x: .value("Time", s.timestamp),
@@ -431,7 +458,7 @@ struct ChartsView: View {
             }
 
             if seriesConfig.showCPULoad {
-                ForEach(samples) { s in
+                ForEach(chartSamples) { s in
                     if let load = s.cpuLoad {
                         LineMark(
                             x: .value("Time", s.timestamp),
@@ -446,7 +473,7 @@ struct ChartsView: View {
             }
 
             if seriesConfig.showGPULoad {
-                ForEach(samples) { s in
+                ForEach(chartSamples) { s in
                     if let load = s.gpuLoad {
                         LineMark(
                             x: .value("Time", s.timestamp),
@@ -589,10 +616,11 @@ struct ChartsView: View {
     }
 
     private var historyRawChart: some View {
-        let primaryDomain = rawPrimaryDomain(samples)
-        let secondaryDomain = rawSecondaryDomain(samples)
+        let chartSamples = displaySamples(samples, maxPoints: 500)
+        let primaryDomain = rawPrimaryDomain(chartSamples)
+        let secondaryDomain = rawSecondaryDomain(chartSamples)
         return DualAxisChart(
-            data: samples,
+            data: chartSamples,
             dateKey: \.timestamp,
             rowsForPoint: { liveRows($0, primaryDomain: primaryDomain, secondaryDomain: secondaryDomain) },
             dateLabel: liveDateLabel,
@@ -602,7 +630,7 @@ struct ChartsView: View {
             secondaryDomain: secondaryDomain
         ) {
             if seriesConfig.showCPUTemp {
-                ForEach(samples) { s in
+                ForEach(chartSamples) { s in
                     if let v = s.cpuTempC {
                         LineMark(
                             x: .value("Time", s.timestamp),
@@ -616,7 +644,7 @@ struct ChartsView: View {
                 }
             }
             if seriesConfig.showGPUTemp {
-                ForEach(samples) { s in
+                ForEach(chartSamples) { s in
                     if let v = s.gpuTempC {
                         LineMark(
                             x: .value("Time", s.timestamp),
@@ -630,7 +658,7 @@ struct ChartsView: View {
                 }
             }
             if seriesConfig.showFanRPM {
-                ForEach(samples) { s in
+                ForEach(chartSamples) { s in
                     if let rpm = s.maxFanRPM.map({ Double($0) }) {
                         LineMark(
                             x: .value("Time", s.timestamp),
@@ -644,7 +672,7 @@ struct ChartsView: View {
                 }
             }
             if seriesConfig.showCPULoad {
-                ForEach(samples) { s in
+                ForEach(chartSamples) { s in
                     if let load = s.cpuLoad {
                         LineMark(
                             x: .value("Time", s.timestamp),
@@ -658,7 +686,7 @@ struct ChartsView: View {
                 }
             }
             if seriesConfig.showGPULoad {
-                ForEach(samples) { s in
+                ForEach(chartSamples) { s in
                     if let load = s.gpuLoad {
                         LineMark(
                             x: .value("Time", s.timestamp),
@@ -861,7 +889,8 @@ struct ChartsView: View {
                     if let v = d.cpuTempPeak {
                         BarMark(
                             x: .value("Day", d.date, unit: .day),
-                            y: .value("°C", v),
+                            yStart: .value("Axis lower", primaryDomain.lowerBound),
+                            yEnd: .value("°C", v),
                             width: .ratio(0.5)
                         )
                         .foregroundStyle(TempColor.forPeak(v))

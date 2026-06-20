@@ -77,6 +77,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { _ in
             WindowManager.shared.showMain()
         }
+
+        WindowManager.shared.showMain()
     }
 
     func applicationWillTerminate(_ notification: Notification) {

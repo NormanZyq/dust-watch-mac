@@ -23,7 +23,8 @@ struct OverviewView: View {
     @State private var last7Days: [DailyStats] = []
     @State private var loading: Bool = false
     @State private var latestSample: Sample?
-    @State private var finding: ThermalFinding?
+    @State private var dustRisk: DustRiskAssessment?
+    @State private var showDustRiskDetails = false
     @ObservedObject private var samplerObserver = SamplerObserver()
 
     /// Dashboard-wide series visibility. Stored in UserDefaults so toggles
@@ -39,7 +40,7 @@ struct OverviewView: View {
             VStack(alignment: .leading, spacing: 18) {
                 header
                 if samplerObserver.isDemoMode { demoBanner }
-                statusCard
+                dustRiskCard
                 statCardGrid
                 sparklineCard
                 weeklyTrendCard
@@ -126,11 +127,11 @@ struct OverviewView: View {
         }
     }
 
-    // MARK: - Status card
+    // MARK: - Dust risk
     //
-    // Shows the latest thermal-degradation finding (if any). If the
-    // user has been running the app for a while and a recent window
-    // shows degradation, this card is the headline.
+    // Shows the current dust risk derived from the baseline comparator.
+    // The card stays visible even when the answer is "none" or "not enough
+    // data" so users can understand what the algorithm currently knows.
 
     // Banner shown when the user is in demo mode. Explains what
     // they're looking at and links to the toggle in Settings.
@@ -149,54 +150,170 @@ struct OverviewView: View {
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(.orange.opacity(0.3)))
     }
 
-    @ViewBuilder
-    private var statusCard: some View {
-        if let f = finding {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.white)
-                        .padding(6)
-                        .background(.red, in: Circle())
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(L("Thermal degradation detected"))
-                            .font(.headline).foregroundStyle(.red)
-                        Text(String(
-                            format: L("%@ · load level %d · rise +%.1f°C vs baseline · p=%.3f"),
-                            f.subsystem.rawValue,
-                            f.cpuPState,
-                            f.riseDelta,
-                            f.pValue
-                        ))
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                }
-                Text(f.ambientCorrected
-                     ? String(format: L("At the same workload, %@ now runs hotter above its idle temperature than it used to — corrected for room-temperature changes. This often indicates dust buildup or aging thermal paste."),
-                              f.subsystem.rawValue)
-                     : String(format: L("Recent median %@ temperature is significantly higher than the long-term baseline at the same workload. (No idle reference was available to correct for room temperature.)"),
-                              f.subsystem.rawValue))
-                    .font(.caption).foregroundStyle(.secondary)
+    private var dustRiskCard: some View {
+        let assessment = currentDustRisk
+        let color = dustRiskColor(assessment.level)
+        return HStack(alignment: .center, spacing: 12) {
+            Image(systemName: dustRiskIcon(assessment.level))
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 34, height: 34)
+                .background(color, in: Circle())
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(dustRiskTitle(assessment.level))
+                    .font(.headline)
+                    .foregroundStyle(color)
+                Text(dustRiskSummary(assessment))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
             }
-            .padding(14)
-            .background(.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(.red.opacity(0.3)))
-        } else if (todayStats?.sampleCount ?? 0) == 0 {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Image(systemName: "hourglass")
-                        .foregroundStyle(.secondary)
-                    Text(L("Collecting data…")).font(.headline)
-                }
-                Text(L("The sampler is running. You'll see real numbers here within a minute, and trend information over the coming days."))
-                    .font(.caption).foregroundStyle(.secondary)
+
+            Spacer()
+
+            Button {
+                showDustRiskDetails.toggle()
+            } label: {
+                Image(systemName: assessment.evidence == nil ? "info.circle" : "exclamationmark.circle.fill")
+                    .font(.system(size: 17, weight: .semibold))
             }
-            .padding(14)
-            .background(Color(NSColor.windowBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
-        } else {
-            EmptyView()
+            .buttonStyle(.plain)
+            .foregroundStyle(color)
+            .help(L("Show risk details"))
+            .popover(isPresented: $showDustRiskDetails, arrowEdge: .trailing) {
+                dustRiskDetails(assessment)
+                    .frame(width: 320)
+                    .padding(14)
+            }
         }
+        .padding(14)
+        .background(color.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(color.opacity(0.28)))
+    }
+
+    private var currentDustRisk: DustRiskAssessment {
+        dustRisk ?? DustRiskAssessment(
+            level: .insufficientData,
+            evidence: nil,
+            baselineSampleCount: 0,
+            recentSampleCount: todayStats?.sampleCount ?? 0,
+            requiredSamplesPerWindow: 60,
+            baselineCoverage: 0,
+            recentCoverage: 0
+        )
+    }
+
+    private func dustRiskTitle(_ level: DustRiskAssessment.Level) -> String {
+        switch level {
+        case .insufficientData:
+            return L("Current dust risk: none, or not enough samples")
+        case .none:
+            return L("Current dust risk: none")
+        case .minor:
+            return L("Current dust risk: minor")
+        case .needsCleaning:
+            return L("Current dust risk: cleaning recommended")
+        }
+    }
+
+    private func dustRiskIcon(_ level: DustRiskAssessment.Level) -> String {
+        switch level {
+        case .insufficientData: return "leaf.fill"
+        case .none: return "checkmark.seal.fill"
+        case .minor: return "exclamationmark.triangle.fill"
+        case .needsCleaning: return "exclamationmark.octagon.fill"
+        }
+    }
+
+    private func dustRiskColor(_ level: DustRiskAssessment.Level) -> Color {
+        switch level {
+        case .insufficientData, .none: return .green
+        case .minor: return .orange
+        case .needsCleaning: return .red
+        }
+    }
+
+    private func dustRiskSummary(_ assessment: DustRiskAssessment) -> String {
+        switch assessment.level {
+        case .insufficientData:
+            return String(
+                format: L("%d far-baseline samples and %d recent samples available. Keep the app running in the background for more accurate analysis."),
+                assessment.baselineSampleCount,
+                assessment.recentSampleCount
+            )
+        case .none:
+            return L("No statistically significant loss of cooling capacity was found.")
+        case .minor:
+            guard let evidence = assessment.evidence else {
+                return L("A small but significant thermal shift was found.")
+            }
+            return String(
+                format: L("%@ shows a small rise at load level %d."),
+                evidence.subsystem.rawValue,
+                evidence.cpuPState
+            )
+        case .needsCleaning:
+            guard let evidence = assessment.evidence else {
+                return L("The baseline comparison found a clear cooling-capacity drop.")
+            }
+            return String(
+                format: L("%@ cooling capacity appears reduced at load level %d."),
+                evidence.subsystem.rawValue,
+                evidence.cpuPState
+            )
+        }
+    }
+
+    private func dustRiskDetails(_ assessment: DustRiskAssessment) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: dustRiskIcon(assessment.level))
+                    .foregroundStyle(dustRiskColor(assessment.level))
+                Text(dustRiskTitle(assessment.level))
+                    .font(.headline)
+            }
+
+            Text(dustRiskDetailText(assessment))
+                .font(.callout)
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Divider()
+
+            Text(String(
+                format: L("Baseline samples: %d · Recent samples: %d"),
+                assessment.baselineSampleCount,
+                assessment.recentSampleCount
+            ))
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+    }
+
+    private func dustRiskDetailText(_ assessment: DustRiskAssessment) -> String {
+        guard let evidence = assessment.evidence else {
+            if assessment.level == .insufficientData {
+                return String(
+                    format: L("The current algorithm compares a far-baseline window with a recent window. It needs at least %d raw samples in each window and enough time coverage before it can compare cooling capacity reliably. You can adjust both windows in Settings. Keep the app running in the background for long-term analysis; sampling is lightweight and designed for low power use. Current coverage: far baseline %.0f%%, recent %.0f%%."),
+                    assessment.requiredSamplesPerWindow,
+                    assessment.baselineCoverage * 100,
+                    assessment.recentCoverage * 100
+                )
+            }
+            return L("The current algorithm compares recent temperatures against the historical baseline at the same workload. No significant cooling-capacity drop was found.")
+        }
+
+        let signal = evidence.ambientCorrected
+            ? String(format: L("Heat rise over idle increased by %.1f°C versus baseline."), evidence.riseDelta)
+            : String(format: L("Median temperature increased by %.1f°C versus baseline."), evidence.tempDelta)
+        let fan = String(format: L("Fan speed changed by %+.0f RPM at the same load."), evidence.fanDelta)
+        let stats = String(
+            format: L("The signal is at load level %d with p = %.3f."),
+            evidence.cpuPState,
+            evidence.pValue
+        )
+        return "\(signal) \(fan) \(stats)"
     }
 
     // MARK: - Stat cards grid
@@ -575,7 +692,8 @@ struct OverviewView: View {
                         if let v = d.cpuTempPeak {
                             BarMark(
                                 x: .value("Day", d.date, unit: .day),
-                                y: .value("°C", v),
+                                yStart: .value("Axis lower", primaryDomain.lowerBound),
+                                yEnd: .value("°C", v),
                                 width: .ratio(0.5)
                             )
                             .foregroundStyle(TempColor.forPeak(v))
@@ -589,6 +707,7 @@ struct OverviewView: View {
                             .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
                     }
                 }
+                .chartYScale(domain: primaryDomain.lowerBound...primaryDomain.upperBound)
                 .frame(height: 180)
             }
         }
@@ -640,14 +759,14 @@ struct OverviewView: View {
                 from: Int64(sevenDaysAgo.timeIntervalSince1970),
                 to:   Int64(now.timeIntervalSince1970))) ?? []
             let cfg = (try? db.loadConfig()) ?? Config()
-            let finding = (try? BaselineComparator.run(database: db, config: cfg))
+            let risk = (try? BaselineComparator.assessDustRisk(database: db, config: cfg))
 
             DispatchQueue.main.async {
                 self.todayStats = today
                 self.yesterdayStats = yesterday
                 self.hourly = hourly
                 self.last7Days = daily
-                self.finding = finding
+                self.dustRisk = risk
                 self.loading = false
             }
         }
