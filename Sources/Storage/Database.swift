@@ -21,6 +21,7 @@ import SQLite3
 final class Database {
     private var db: OpaquePointer?
     private let path: String
+    private static let minimumTrustedRealGPUTempC = 15.0
 
     init(path: String) throws {
         self.path = path
@@ -59,6 +60,7 @@ final class Database {
                 ts        INTEGER PRIMARY KEY,
                 cpu_temp  REAL,
                 gpu_temp  REAL,
+                gpu_temp_raw REAL,
                 cpu_freq  REAL,
                 cpu_load  REAL,
                 gpu_load  REAL,
@@ -67,8 +69,6 @@ final class Database {
                 source    TEXT NOT NULL DEFAULT 'real'
             );
             """,
-            "CREATE INDEX IF NOT EXISTS idx_samples_ts ON samples(ts);",
-            "CREATE INDEX IF NOT EXISTS idx_samples_source_ts ON samples(source, ts);",
 
             // Hourly rollup. Created by Aggregator when raw rows are evicted.
             // Includes source so we keep real and synthetic separate.
@@ -112,7 +112,6 @@ final class Database {
                 details   TEXT NOT NULL
             );
             """,
-            "CREATE INDEX IF NOT EXISTS idx_alerts_kind_ts ON alerts(kind, ts);",
 
             // Single-row config table. id is always 0; we use ON CONFLICT
             // semantics to upsert.
@@ -136,11 +135,99 @@ final class Database {
             try exec(sql)
         }
 
-        // Note: no ALTER migration for the `source` column here. On
-        // a fresh DB the CREATE TABLE above already includes it. If
-        // a user has an old DB from before this column existed, the
-        // "Clear all data" button in Settings wipes it cleanly so
-        // the schema can re-create with the new shape.
+        let schemaVersion = try userVersion()
+        try migrateSchema(from: schemaVersion)
+        if schemaVersion < 2 {
+            try setUserVersion(2)
+        }
+        try createIndexes()
+    }
+
+    private func migrateSchema(from version: Int) throws {
+        try migrateSamplesSchema()
+        try migrateRollupTable("samples_hourly")
+        try migrateRollupTable("samples_daily")
+        if version < 2 {
+            try sanitizeRollupGPUTemps("samples_hourly")
+            try sanitizeRollupGPUTemps("samples_daily")
+        }
+    }
+
+    private func migrateSamplesSchema() throws {
+        if try !tableHasColumn("samples", column: "source") {
+            try exec("ALTER TABLE samples ADD COLUMN source TEXT NOT NULL DEFAULT 'real';")
+        }
+
+        if try !tableHasColumn("samples", column: "gpu_temp_raw") {
+            try exec("ALTER TABLE samples ADD COLUMN gpu_temp_raw REAL;")
+        }
+
+        try exec("""
+            UPDATE samples
+            SET gpu_temp_raw = gpu_temp
+            WHERE gpu_temp_raw IS NULL AND gpu_temp IS NOT NULL;
+            """)
+
+        try exec("""
+            UPDATE samples
+            SET gpu_temp = NULL
+            WHERE source = 'real'
+              AND gpu_temp IS NOT NULL
+              AND gpu_temp < ?;
+            """, bindings: [.double(Self.minimumTrustedRealGPUTempC)])
+    }
+
+    private func migrateRollupTable(_ table: String) throws {
+        guard try !tableHasColumn(table, column: "source") else { return }
+
+        let temp = "\(table)_migrating"
+        try exec("DROP TABLE IF EXISTS \(temp);")
+        try exec("""
+            CREATE TABLE \(temp) (
+                bucket       INTEGER NOT NULL,
+                source       TEXT    NOT NULL DEFAULT 'real',
+                cpu_temp_avg REAL,
+                cpu_temp_max REAL,
+                gpu_temp_avg REAL,
+                gpu_temp_max REAL,
+                fan_max_avg  REAL,
+                fan_max_max  INTEGER,
+                n            INTEGER,
+                PRIMARY KEY (bucket, source)
+            );
+            """)
+        try exec("""
+            INSERT INTO \(temp)
+                (bucket, source, cpu_temp_avg, cpu_temp_max, gpu_temp_avg, gpu_temp_max,
+                 fan_max_avg, fan_max_max, n)
+            SELECT
+                bucket, 'real', cpu_temp_avg, cpu_temp_max, gpu_temp_avg, gpu_temp_max,
+                fan_max_avg, fan_max_max, n
+            FROM \(table);
+            """)
+        try exec("DROP TABLE \(table);")
+        try exec("ALTER TABLE \(temp) RENAME TO \(table);")
+    }
+
+    private func sanitizeRollupGPUTemps(_ table: String) throws {
+        try exec("""
+            UPDATE \(table)
+            SET gpu_temp_avg = NULL
+            WHERE source = 'real';
+            """)
+        try exec("""
+            UPDATE \(table)
+            SET gpu_temp_max = NULL
+            WHERE source = 'real'
+              AND gpu_temp_max IS NOT NULL
+              AND gpu_temp_max < ?;
+            """, bindings: [.double(Self.minimumTrustedRealGPUTempC)])
+    }
+
+    private func createIndexes() throws {
+        try exec("CREATE INDEX IF NOT EXISTS idx_samples_ts ON samples(ts);")
+        try exec("CREATE INDEX IF NOT EXISTS idx_samples_source_ts ON samples(source, ts);")
+        try exec("CREATE INDEX IF NOT EXISTS idx_alerts_kind_ts ON alerts(kind, ts);")
     }
 
     private func pragmas() throws {
@@ -279,15 +366,18 @@ final class Database {
         let ts = Int64(s.timestamp.timeIntervalSince1970)
         let pState = s.maxPState ?? -1
         let fanMax = s.maxFanRPM ?? -1
+        let gpuTempRaw = s.gpuTempRawC ?? s.gpuTempC
+        let gpuTempTrusted = Self.trustedGPUTemp(s.gpuTempC, source: s.source)
         let sql = """
             INSERT OR REPLACE INTO samples
-                (ts, cpu_temp, gpu_temp, cpu_freq, cpu_load, gpu_load, p_state, fan_max, source)
-            VALUES (?,?,?,?,?,?,?,?,?);
+                (ts, cpu_temp, gpu_temp, gpu_temp_raw, cpu_freq, cpu_load, gpu_load, p_state, fan_max, source)
+            VALUES (?,?,?,?,?,?,?,?,?,?);
             """
         try exec(sql, bindings: [
             .int64(ts),
             .optionalDouble(s.cpuTempC),
-            .optionalDouble(s.gpuTempC),
+            .optionalDouble(gpuTempTrusted),
+            .optionalDouble(gpuTempRaw),
             .optionalDouble(s.cpuFreqGHz),
             .optionalDouble(s.cpuLoad),
             .optionalDouble(s.gpuLoad),
@@ -345,20 +435,21 @@ final class Database {
 
     private func fetchRawSamples(from: Int64, to: Int64) throws -> [Sample] {
         let sql = """
-            SELECT ts, cpu_temp, gpu_temp, cpu_freq, cpu_load, gpu_load, p_state, fan_max, source
+            SELECT ts, cpu_temp, gpu_temp, gpu_temp_raw, cpu_freq, cpu_load, gpu_load, p_state, fan_max, source
             FROM samples WHERE ts BETWEEN ? AND ? ORDER BY ts;
             """
         return try query(sql, bindings: [.int64(from), .int64(to)]) { stmt in
-            let sourceRaw = String(cString: sqlite3_column_text(stmt, 8))
+            let sourceRaw = String(cString: sqlite3_column_text(stmt, 9))
             return Sample(
                 timestamp: Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(stmt, 0))),
                 cpuTempC:   sqlite3_column_double_opt(stmt, 1),
                 gpuTempC:   sqlite3_column_double_opt(stmt, 2),
-                cpuFreqGHz: sqlite3_column_double_opt(stmt, 3),
-                cpuLoad:    sqlite3_column_double_opt(stmt, 4),
-                gpuLoad:    sqlite3_column_double_opt(stmt, 5),
-                cpuPState:  [Int(sqlite3_column_int(stmt, 6))].filter { $0 >= 0 },
-                fanRPMs:    [Int(sqlite3_column_int(stmt, 7))].filter { $0 >= 0 },
+                gpuTempRawC: sqlite3_column_double_opt(stmt, 3),
+                cpuFreqGHz: sqlite3_column_double_opt(stmt, 4),
+                cpuLoad:    sqlite3_column_double_opt(stmt, 5),
+                gpuLoad:    sqlite3_column_double_opt(stmt, 6),
+                cpuPState:  [Int(sqlite3_column_int(stmt, 7))].filter { $0 >= 0 },
+                fanRPMs:    [Int(sqlite3_column_int(stmt, 8))].filter { $0 >= 0 },
                 source:     SampleSource(rawValue: sourceRaw) ?? .real
             )
         }
@@ -385,6 +476,7 @@ final class Database {
                 timestamp:  Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(stmt, 0))),
                 cpuTempC:   sqlite3_column_double_opt(stmt, 1),
                 gpuTempC:   sqlite3_column_double_opt(stmt, 2),
+                gpuTempRawC: nil,
                 cpuFreqGHz: nil,
                 cpuLoad:    nil,
                 gpuLoad:    nil,
@@ -404,6 +496,7 @@ final class Database {
                 timestamp:  Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(stmt, 0))),
                 cpuTempC:   sqlite3_column_double_opt(stmt, 1),
                 gpuTempC:   sqlite3_column_double_opt(stmt, 2),
+                gpuTempRawC: nil,
                 cpuFreqGHz: nil,
                 cpuLoad:    nil,
                 gpuLoad:    nil,
@@ -593,6 +686,30 @@ final class Database {
         case double(Double)
         case text(String)
         case optionalDouble(Double?)
+    }
+
+    private static func trustedGPUTemp(_ value: Double?, source: SampleSource) -> Double? {
+        guard let value else { return nil }
+        guard source == .real else { return value }
+        return value >= minimumTrustedRealGPUTempC ? value : nil
+    }
+
+    private func tableHasColumn(_ table: String, column: String) throws -> Bool {
+        let rows = try query("PRAGMA table_info(\(table));", bindings: []) { stmt -> String in
+            String(cString: sqlite3_column_text(stmt, 1))
+        }
+        return rows.contains(column)
+    }
+
+    private func userVersion() throws -> Int {
+        let rows = try query("PRAGMA user_version;", bindings: []) { stmt in
+            Int(sqlite3_column_int(stmt, 0))
+        }
+        return rows.first ?? 0
+    }
+
+    private func setUserVersion(_ version: Int) throws {
+        try exec("PRAGMA user_version = \(version);")
     }
 
     private func exec(_ sql: String, bindings: [Binding] = []) throws {

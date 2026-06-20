@@ -38,6 +38,7 @@ struct Sample: Equatable, Identifiable {
     var timestamp: Date
     var cpuTempC:  Double?
     var gpuTempC:  Double?
+    var gpuTempRawC: Double? = nil
     var cpuFreqGHz: Double?
     var cpuLoad:   Double?
     var gpuLoad:   Double?

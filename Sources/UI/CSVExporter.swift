@@ -47,13 +47,14 @@ enum CSVExporter {
         out += "# From: \(iso.string(from: from))\n"
         out += "# To:   \(iso.string(from: to))\n"
         out += "# Rows: \(samples.count)\n"
-        out += "timestamp,cpu_temp_c,gpu_temp_c,cpu_freq_ghz,cpu_load,gpu_load,p_state,fan_max_rpm\n"
+        out += "timestamp,cpu_temp_c,gpu_temp_c,gpu_temp_raw_c,cpu_freq_ghz,cpu_load,gpu_load,p_state,fan_max_rpm\n"
         for s in samples {
             let ts = iso.string(from: s.timestamp)
             let cells: [String] = [
                 ts,
                 s.cpuTempC.map   { String(format: "%.2f", $0) } ?? "",
                 s.gpuTempC.map   { String(format: "%.2f", $0) } ?? "",
+                s.gpuTempRawC.map { String(format: "%.2f", $0) } ?? "",
                 s.cpuFreqGHz.map { String(format: "%.3f", $0) } ?? "",
                 s.cpuLoad.map    { String(format: "%.3f", $0) } ?? "",
                 s.gpuLoad.map    { String(format: "%.3f", $0) } ?? "",
