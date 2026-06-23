@@ -1057,6 +1057,7 @@ struct ChartsView: View {
 
     // MARK: - Export
 
+    @MainActor
     private func exportCSV() {
         let from: Date
         let to = Date()

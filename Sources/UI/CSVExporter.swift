@@ -21,7 +21,7 @@ enum CSVExporter {
         panel.allowedContentTypes = [.commaSeparatedText]
         let df = DateFormatter()
         df.dateFormat = "yyyyMMdd-HHmm"
-        let defaultName = "clean-notification-\(df.string(from: Date())).csv"
+        let defaultName = "dustwatch-\(df.string(from: Date())).csv"
         panel.nameFieldStringValue = defaultName
         panel.title = L("Export samples")
         panel.message = L("Export temperature and fan data as CSV.")
