@@ -252,39 +252,18 @@ final class Database {
     /// samples by local-day bucket. This powers the heatmap and the
     /// overview page's 7/30-day trend cards.
     func fetchDailyStats(from fromSec: Int64, to toSec: Int64) throws -> [DailyStats] {
-        // We use a per-day bucket computed in UTC. The "date" returned
-        // is normalized to local midnight by the caller.
-        let sql = """
-            SELECT
-                (ts / 86400) * 86400                              AS bucket,
-                COUNT(*)                                          AS n,
-                MAX(cpu_temp)                                     AS cpu_peak,
-                AVG(cpu_temp)                                     AS cpu_avg,
-                MIN(cpu_temp)                                     AS cpu_min,
-                MAX(gpu_temp)                                     AS gpu_peak,
-                AVG(gpu_temp)                                     AS gpu_avg,
-                MAX(CASE WHEN fan_max > 0 THEN fan_max END)       AS fan_peak,
-                AVG(CASE WHEN fan_max > 0 THEN fan_max END)       AS fan_avg
-            FROM samples
-            WHERE ts BETWEEN ? AND ?
-            GROUP BY bucket
-            ORDER BY bucket;
-            """
-        let rows = try query(sql, bindings: [.int64(fromSec), .int64(toSec)]) { stmt in
-            let bucket = Int64(sqlite3_column_int64(stmt, 0))
-            return DailyStats(
-                date:           Date(timeIntervalSince1970: TimeInterval(bucket)),
-                sampleCount:    Int(sqlite3_column_int(stmt, 1)),
-                cpuTempPeak:    sqlite3_column_double_opt(stmt, 2),
-                cpuTempAvg:     sqlite3_column_double_opt(stmt, 3),
-                cpuTempMin:     sqlite3_column_double_opt(stmt, 4),
-                gpuTempPeak:    sqlite3_column_double_opt(stmt, 5),
-                gpuTempAvg:     sqlite3_column_double_opt(stmt, 6),
-                fanRpmPeak:     sqlite3_column_int_opt(stmt, 7),
-                fanRpmAvg:      sqlite3_column_double_opt(stmt, 8)
-            )
+        let samples = try fetchRawSamples(from: fromSec, to: toSec)
+        let calendar = Calendar.current
+        var buckets: [Date: DailyStatsAccumulator] = [:]
+
+        for sample in samples {
+            let day = calendar.startOfDay(for: sample.timestamp)
+            buckets[day, default: DailyStatsAccumulator(date: day)].add(sample)
         }
-        return rows
+
+        return buckets.values
+            .map(\.stats)
+            .sorted { $0.date < $1.date }
     }
 
     /// Per-hour stats. Used for the last-24h trend on the Overview page.
@@ -334,13 +313,11 @@ final class Database {
                 MAX(gpu_temp)                                     AS gpu_peak,
                 AVG(gpu_temp)                                     AS gpu_avg,
                 MAX(CASE WHEN fan_max > 0 THEN fan_max END)       AS fan_peak,
-                AVG(CASE WHEN fan_max > 0 THEN fan_max END)       AS fan_avg,
-                SUM(CASE WHEN cpu_temp > ? THEN 1 ELSE 0 END)     AS above_n
+                AVG(CASE WHEN fan_max > 0 THEN fan_max END)       AS fan_avg
             FROM samples
             WHERE ts BETWEEN ? AND ?;
             """
         let rows = try query(sql, bindings: [
-            .double(thresholdC),
             .int64(fromSec),
             .int64(toSec),
         ]) { stmt in
@@ -355,13 +332,179 @@ final class Database {
                 gpuTempAvg:  sqlite3_column_double_opt(stmt, 5),
                 fanRpmPeak:  sqlite3_column_int_opt(stmt, 6),
                 fanRpmAvg:   sqlite3_column_double_opt(stmt, 7),
-                cpuMinutesAboveThreshold: Int(sqlite3_column_int(stmt, 8))
+                cpuSecondsAboveThreshold: 0
             )
         }
-        return rows.first ?? SummaryStats.empty(
+        var summary = rows.first ?? SummaryStats.empty(
             from: Date(timeIntervalSince1970: TimeInterval(fromSec)),
             to:   Date(timeIntervalSince1970: TimeInterval(toSec))
         )
+        let seconds = try fetchThresholdDurationSeconds(
+            from: fromSec,
+            to: toSec,
+            thresholdC: thresholdC
+        )
+        summary = SummaryStats(
+            from: summary.from,
+            to: summary.to,
+            sampleCount: summary.sampleCount,
+            cpuTempPeak: summary.cpuTempPeak,
+            cpuTempAvg: summary.cpuTempAvg,
+            cpuTempMin: summary.cpuTempMin,
+            gpuTempPeak: summary.gpuTempPeak,
+            gpuTempAvg: summary.gpuTempAvg,
+            fanRpmPeak: summary.fanRpmPeak,
+            fanRpmAvg: summary.fanRpmAvg,
+            cpuSecondsAboveThreshold: seconds
+        )
+        return summary
+    }
+
+    /// Per-hour CPU duration above `thresholdC` over `[from, to]`.
+    /// Used by the Overview "Above 70°C today" card.
+    func fetchHourlyThresholdDurations(from fromSec: Int64, to toSec: Int64,
+                                       thresholdC: Double = 70.0) throws -> [HourlyThresholdDuration] {
+        guard fromSec < toSec else { return [] }
+        let samples = try fetchTemperatureSamplesForDuration(from: fromSec, to: toSec)
+        let sampleInterval = durationSampleInterval()
+        let maxRepresentedInterval = Int64(max(sampleInterval * 2, 120))
+        let calendar = Calendar.current
+        var buckets: [Int64: Int64] = [:]
+
+        for (index, sample) in samples.enumerated() {
+            guard let temp = sample.cpuTemp, temp > thresholdC else { continue }
+
+            let nextTs = index + 1 < samples.count ? samples[index + 1].ts : toSec
+            let representedEnd = min(nextTs, sample.ts + maxRepresentedInterval, toSec)
+            var cursor = max(sample.ts, fromSec)
+            guard representedEnd > cursor else { continue }
+
+            while cursor < representedEnd {
+                let hourStart = localHourStart(containing: cursor, calendar: calendar)
+                let hourEnd = localHourEnd(after: hourStart, calendar: calendar)
+                let chunkEnd = min(representedEnd, hourEnd)
+                buckets[hourStart, default: 0] += chunkEnd - cursor
+                cursor = chunkEnd
+            }
+        }
+
+        var result: [HourlyThresholdDuration] = []
+        var hour = localHourStart(containing: fromSec, calendar: calendar)
+        while hour < toSec {
+            result.append(HourlyThresholdDuration(
+                hour: Date(timeIntervalSince1970: TimeInterval(hour)),
+                secondsAboveThreshold: Int(buckets[hour] ?? 0)
+            ))
+            hour = localHourEnd(after: hour, calendar: calendar)
+        }
+        return result
+    }
+
+    /// Per-day CPU duration above 70°C and 75°C over `[from, to]`.
+    /// Used by the Heatmap tab to color days by sustained heat rather than
+    /// by a single peak sample.
+    func fetchDailyThresholdDurations(from fromSec: Int64, to toSec: Int64) throws -> [DailyThresholdDuration] {
+        guard fromSec < toSec else { return [] }
+        let samples = try fetchTemperatureSamplesForDuration(from: fromSec, to: toSec)
+        let sampleInterval = durationSampleInterval()
+        let maxRepresentedInterval = Int64(max(sampleInterval * 2, 120))
+        let calendar = Calendar.current
+        var above70: [Int64: Int64] = [:]
+        var above75: [Int64: Int64] = [:]
+
+        for (index, sample) in samples.enumerated() {
+            guard let temp = sample.cpuTemp, temp > 70 else { continue }
+
+            let nextTs = index + 1 < samples.count ? samples[index + 1].ts : toSec
+            let representedEnd = min(nextTs, sample.ts + maxRepresentedInterval, toSec)
+            var cursor = max(sample.ts, fromSec)
+            guard representedEnd > cursor else { continue }
+
+            while cursor < representedEnd {
+                let dayStart = localDayStart(containing: cursor, calendar: calendar)
+                let dayEnd = localDayEnd(after: dayStart, calendar: calendar)
+                let chunkEnd = min(representedEnd, dayEnd)
+                let seconds = chunkEnd - cursor
+                above70[dayStart, default: 0] += seconds
+                if temp > 75 {
+                    above75[dayStart, default: 0] += seconds
+                }
+                cursor = chunkEnd
+            }
+        }
+
+        var result: [DailyThresholdDuration] = []
+        var day = localDayStart(containing: fromSec, calendar: calendar)
+        while day < toSec {
+            result.append(DailyThresholdDuration(
+                date: Date(timeIntervalSince1970: TimeInterval(day)),
+                secondsAbove70: Int(above70[day] ?? 0),
+                secondsAbove75: Int(above75[day] ?? 0)
+            ))
+            day = localDayEnd(after: day, calendar: calendar)
+        }
+        return result
+    }
+
+    private func fetchThresholdDurationSeconds(from fromSec: Int64, to toSec: Int64,
+                                               thresholdC: Double) throws -> Int {
+        try fetchHourlyThresholdDurations(
+            from: fromSec,
+            to: toSec,
+            thresholdC: thresholdC
+        )
+        .reduce(0) { $0 + $1.secondsAboveThreshold }
+    }
+
+    private func fetchTemperatureSamplesForDuration(from fromSec: Int64, to toSec: Int64) throws -> [(ts: Int64, cpuTemp: Double?)] {
+        let sampleInterval = Int64(max(durationSampleInterval(), 1))
+        let lookback = max(sampleInterval * 2, 120)
+        let fromWithLookback = max(0, fromSec - lookback)
+        let sql = """
+            SELECT ts, cpu_temp
+            FROM samples
+            WHERE ts BETWEEN ? AND ?
+            ORDER BY ts;
+            """
+        return try query(sql, bindings: [
+            .int64(fromWithLookback),
+            .int64(toSec),
+        ]) { stmt in
+            (
+                ts: Int64(sqlite3_column_int64(stmt, 0)),
+                cpuTemp: sqlite3_column_double_opt(stmt, 1)
+            )
+        }
+    }
+
+    private func durationSampleInterval() -> Int {
+        ((try? loadConfig()) ?? Config()).sampleIntervalSec
+    }
+
+    private func localHourStart(containing seconds: Int64, calendar: Calendar) -> Int64 {
+        let date = Date(timeIntervalSince1970: TimeInterval(seconds))
+        let start = calendar.dateInterval(of: .hour, for: date)?.start
+            ?? Date(timeIntervalSince1970: TimeInterval((seconds / 3600) * 3600))
+        return Int64(start.timeIntervalSince1970)
+    }
+
+    private func localHourEnd(after hourStart: Int64, calendar: Calendar) -> Int64 {
+        let start = Date(timeIntervalSince1970: TimeInterval(hourStart))
+        let end = calendar.date(byAdding: .hour, value: 1, to: start)
+            ?? start.addingTimeInterval(3600)
+        return max(hourStart + 1, Int64(end.timeIntervalSince1970))
+    }
+
+    private func localDayStart(containing seconds: Int64, calendar: Calendar) -> Int64 {
+        let date = Date(timeIntervalSince1970: TimeInterval(seconds))
+        return Int64(calendar.startOfDay(for: date).timeIntervalSince1970)
+    }
+
+    private func localDayEnd(after dayStart: Int64, calendar: Calendar) -> Int64 {
+        let start = Date(timeIntervalSince1970: TimeInterval(dayStart))
+        let end = calendar.date(byAdding: .day, value: 1, to: start)
+            ?? start.addingTimeInterval(86400)
+        return max(dayStart + 1, Int64(end.timeIntervalSince1970))
     }
 
     /// Fetch raw samples for export. Returns rows in `[from, to]`
@@ -780,6 +923,58 @@ final class Database {
                 }
             }
         }
+    }
+}
+
+private struct DailyStatsAccumulator {
+    let date: Date
+    var sampleCount = 0
+    var cpuPeak: Double?
+    var cpuSum = 0.0
+    var cpuCount = 0
+    var cpuMin: Double?
+    var gpuPeak: Double?
+    var gpuSum = 0.0
+    var gpuCount = 0
+    var fanPeak: Int?
+    var fanSum = 0.0
+    var fanCount = 0
+
+    mutating func add(_ sample: Sample) {
+        sampleCount += 1
+
+        if let cpu = sample.cpuTempC {
+            cpuPeak = max(cpuPeak ?? cpu, cpu)
+            cpuMin = min(cpuMin ?? cpu, cpu)
+            cpuSum += cpu
+            cpuCount += 1
+        }
+
+        if let gpu = sample.gpuTempC {
+            gpuPeak = max(gpuPeak ?? gpu, gpu)
+            gpuSum += gpu
+            gpuCount += 1
+        }
+
+        if let fan = sample.maxFanRPM, fan > 0 {
+            fanPeak = max(fanPeak ?? fan, fan)
+            fanSum += Double(fan)
+            fanCount += 1
+        }
+    }
+
+    var stats: DailyStats {
+        DailyStats(
+            date: date,
+            sampleCount: sampleCount,
+            cpuTempPeak: cpuPeak,
+            cpuTempAvg: cpuCount > 0 ? cpuSum / Double(cpuCount) : nil,
+            cpuTempMin: cpuMin,
+            gpuTempPeak: gpuPeak,
+            gpuTempAvg: gpuCount > 0 ? gpuSum / Double(gpuCount) : nil,
+            fanRpmPeak: fanPeak,
+            fanRpmAvg: fanCount > 0 ? fanSum / Double(fanCount) : nil
+        )
     }
 }
 

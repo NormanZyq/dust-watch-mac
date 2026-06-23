@@ -20,6 +20,7 @@ struct OverviewView: View {
     @State private var todayStats: SummaryStats?
     @State private var yesterdayStats: SummaryStats?
     @State private var hourly: [HourlyStats] = []
+    @State private var todayHotDurations: [HourlyThresholdDuration] = []
     @State private var last7Days: [DailyStats] = []
     @State private var loading: Bool = false
     @State private var latestSample: Sample?
@@ -395,16 +396,17 @@ struct OverviewView: View {
             )
             statCard(
                 title: L("Above 70°C today"),
-                value: "\(todayStats?.cpuMinutesAboveThreshold ?? 0) min",
+                value: todayStats.map { formatDuration($0.cpuSecondsAboveThreshold) } ?? "—",
                 delta: nil,
                 icon: "flame.fill",
                 tint: .red,
                 sparklinePrimary: nil,
                 sparklineSecondary: nil,
+                hotDurationBuckets: todayHotDurations,
                 secondaryTint: .clear,
-                sparklineCaption: hourlyBarSummary,
+                sparklineCaption: hotDurationSummary,
                 sparklineTint: .red,
-                warning: (todayStats?.cpuMinutesAboveThreshold ?? 0) > 0
+                warning: (todayStats?.cpuSecondsAboveThreshold ?? 0) > 0
             )
         }
     }
@@ -417,6 +419,7 @@ struct OverviewView: View {
                           tint: Color,
                           sparklinePrimary: [Double?]?,
                           sparklineSecondary: [Double?]?,
+                          hotDurationBuckets: [HourlyThresholdDuration]? = nil,
                           secondaryTint: Color,
                           sparklineCaption: String,
                           sparklineTint: Color,
@@ -446,7 +449,7 @@ struct OverviewView: View {
                 Text(" ").font(.caption2)  // placeholder for layout stability
             }
             // Sparkline area. Either a line chart for temp/fan cards
-            // or a small bar histogram for the "minutes above 70" card.
+            // or a small duration chart for the "above 70" card.
             if let sparklinePrimary, !sparklinePrimary.allSatisfy({ $0 == nil }) {
                 MiniSparkline(
                     values: sparklinePrimary,
@@ -455,9 +458,8 @@ struct OverviewView: View {
                     secondaryTint: secondaryTint
                 )
                 .frame(height: 36)
-            } else if title.hasPrefix("Above 70") {
-                // Mini hourly bar histogram of peak CPU temps > 70
-                MiniHotBar(hourly: hourly)
+            } else if let hotDurationBuckets {
+                MiniHotDurationBar(buckets: hotDurationBuckets)
                     .frame(height: 36)
             } else {
                 // placeholder height to keep cards aligned when no sparkline
@@ -486,14 +488,16 @@ struct OverviewView: View {
         return String(format: L("24h range %.1f–%.1f  ·  avg %.1f"), lo, hi, avg)
     }
 
-    /// Caption for the "Above 70°C" card: a textual breakdown of how
-    /// many hours spent above the threshold vs below it.
-    private var hourlyBarSummary: String {
-        let hot = hourly.filter { ($0.cpuTempPeak ?? 0) >= 70 }.count
-        if hot == 0 {
-            return L("no hours ≥ 70°C in last 24h")
+    /// Caption for the "Above 70°C" card: today's distribution of
+    /// above-threshold duration, using the same threshold semantics as
+    /// the card value.
+    private var hotDurationSummary: String {
+        let activeHours = todayHotDurations.filter { $0.secondsAboveThreshold > 0 }.count
+        guard activeHours > 0 else {
+            return L("no time above 70°C today")
         }
-        return String(format: L("%d hours · ≥ 70°C in 24h"), hot, hourly.count)
+        let peakSeconds = todayHotDurations.map(\.secondsAboveThreshold).max() ?? 0
+        return L("%d active hours · max %@ in one hour", activeHours, formatDuration(peakSeconds))
     }
 
     // MARK: - 24h interactive chart
@@ -808,6 +812,9 @@ struct OverviewView: View {
             let hourly = (try? db.fetchHourlyStats(
                 from: Int64(cal.date(byAdding: .day, value: -1, to: now)!.timeIntervalSince1970),
                 to:   Int64(now.timeIntervalSince1970))) ?? []
+            let hotDurations = (try? db.fetchHourlyThresholdDurations(
+                from: Int64(startOfToday.timeIntervalSince1970),
+                to:   Int64(now.timeIntervalSince1970))) ?? []
             let daily = (try? db.fetchDailyStats(
                 from: Int64(sevenDaysAgo.timeIntervalSince1970),
                 to:   Int64(now.timeIntervalSince1970))) ?? []
@@ -818,6 +825,7 @@ struct OverviewView: View {
                 self.todayStats = today
                 self.yesterdayStats = yesterday
                 self.hourly = hourly
+                self.todayHotDurations = hotDurations
                 self.last7Days = daily
                 self.dustRisk = risk
                 self.loading = false
@@ -825,9 +833,9 @@ struct OverviewView: View {
         }
     }
 
-    /// Lightweight re-fetch that only updates the "today" summary and
-    /// the latest sample timestamp. The hourly chart and weekly bars
-    /// don't need to redraw on every 1-minute sample.
+    /// Lightweight re-fetch that updates the "today" summary, the high-temp
+    /// duration sparkline, and the latest sample timestamp. The 24h chart and
+    /// weekly chart don't need to redraw on every 1-minute sample.
     private func refreshTodayOnly() {
         let cal = Calendar.current
         let now = Date()
@@ -837,8 +845,12 @@ struct OverviewView: View {
             let today = try? db.fetchSummaryStats(
                 from: Int64(startOfToday.timeIntervalSince1970),
                 to:   Int64(now.timeIntervalSince1970))
+            let hotDurations = try? db.fetchHourlyThresholdDurations(
+                from: Int64(startOfToday.timeIntervalSince1970),
+                to:   Int64(now.timeIntervalSince1970))
             DispatchQueue.main.async {
                 if let today = today { self.todayStats = today }
+                if let hotDurations = hotDurations { self.todayHotDurations = hotDurations }
             }
         }
     }
@@ -864,33 +876,44 @@ struct OverviewView: View {
         if s.contains("▼") { return .green }
         return .secondary
     }
+
+    private func formatDuration(_ seconds: Int) -> String {
+        guard seconds > 0 else { return L("0 min") }
+        if seconds < 60 { return L("<1 min") }
+        let minutes = Int((Double(seconds) / 60.0).rounded())
+        if minutes < 60 {
+            return L("%d min", minutes)
+        }
+        let hours = minutes / 60
+        let remainingMinutes = minutes % 60
+        if remainingMinutes == 0 {
+            return L("%d h", hours)
+        }
+        return L("%d h %d min", hours, remainingMinutes)
+    }
 }
 
-// MARK: - MiniHotBar
+// MARK: - MiniHotDurationBar
 //
-// Tiny 24-bin bar histogram used in the "Above 70°C today" card.
-// Each bin is a single hour; bar height = peak CPU temp on a
-// dynamic scale that still includes the 70°C reference. Bars >= 70°C are tinted red; cooler bars are
-// secondary-tinted so the visual emphasis is on "where it was
-// hot." Drawn from the in-memory `hourly` array — no DB hit.
+// Tiny hourly duration chart used in the "Above 70°C today" card.
+// Each bin is a local hour; bar height = minutes spent above the threshold.
+// Drawn from pre-loaded state so rendering does not hit the database.
 
-private struct MiniHotBar: View {
-    let hourly: [HourlyStats]
+private struct MiniHotDurationBar: View {
+    let buckets: [HourlyThresholdDuration]
 
     var body: some View {
         Chart {
-            ForEach(hourly) { h in
-                let v = h.cpuTempPeak ?? 0
+            ForEach(buckets) { bucket in
+                let minutes = Double(bucket.secondsAboveThreshold) / 60.0
                 BarMark(
-                    x: .value("h", h.hour),
-                    y: .value("°C", v)
+                    x: .value("Hour", bucket.hour),
+                    y: .value("Minutes", minutes),
+                    width: .fixed(4)
                 )
-                .foregroundStyle(v >= 70 ? .red.opacity(0.85) : .secondary.opacity(0.25))
+                .foregroundStyle(minutes > 0 ? .red.opacity(0.85) : .secondary.opacity(0.18))
                 .cornerRadius(1)
             }
-            RuleMark(y: .value("70", 70))
-                .foregroundStyle(.red.opacity(0.4))
-                .lineStyle(StrokeStyle(lineWidth: 0.5, dash: [2, 2]))
         }
         .chartXAxis(.hidden)
         .chartYAxis(.hidden)
@@ -900,10 +923,12 @@ private struct MiniHotBar: View {
     }
 
     private var yDomain: ClosedRange<Double> {
-        paddedAxisDomain(
-            values: hourly.compactMap(\.cpuTempPeak) + [70],
-            fallback: 0...100,
-            minSpan: 20
+        let values = buckets.map { Double($0.secondsAboveThreshold) / 60.0 }
+        return paddedAxisDomain(
+            values: values,
+            fallback: 0...60,
+            minSpan: 10,
+            clampLowerToZero: true
         )
     }
 }

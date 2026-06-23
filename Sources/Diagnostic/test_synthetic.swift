@@ -66,4 +66,4 @@ print("  CPU avg:  \(summary.cpuTempAvg.map  { String(format: "%.1f°C", $0) } ?
 print("  CPU min:  \(summary.cpuTempMin.map  { String(format: "%.1f°C", $0) } ?? "—")")
 print("  GPU peak: \(summary.gpuTempPeak.map { String(format: "%.1f°C", $0) } ?? "—")")
 print("  Fan peak: \(summary.fanRpmPeak.map { "\($0) RPM" } ?? "—")")
-print("  minutes above 70°C: \(summary.cpuMinutesAboveThreshold)")
+print("  seconds above 70°C: \(summary.cpuSecondsAboveThreshold)")

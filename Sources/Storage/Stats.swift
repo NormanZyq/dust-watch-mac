@@ -38,6 +38,21 @@ struct HourlyStats: Equatable, Identifiable {
     var id: Date { hour }
 }
 
+struct HourlyThresholdDuration: Equatable, Identifiable {
+    let hour: Date
+    let secondsAboveThreshold: Int
+
+    var id: Date { hour }
+}
+
+struct DailyThresholdDuration: Equatable, Identifiable {
+    let date: Date
+    let secondsAbove70: Int
+    let secondsAbove75: Int
+
+    var id: Date { date }
+}
+
 struct SummaryStats: Equatable {
     let from: Date
     let to: Date
@@ -49,8 +64,8 @@ struct SummaryStats: Equatable {
     let gpuTempAvg: Double?
     let fanRpmPeak: Int?
     let fanRpmAvg: Double?
-    /// Number of minutes where CPU temp was above `thresholdC`.
-    let cpuMinutesAboveThreshold: Int
+    /// Estimated duration where CPU temp was above `thresholdC`.
+    let cpuSecondsAboveThreshold: Int
 
     static func empty(from: Date, to: Date) -> SummaryStats {
         SummaryStats(
@@ -58,7 +73,7 @@ struct SummaryStats: Equatable {
             cpuTempPeak: nil, cpuTempAvg: nil, cpuTempMin: nil,
             gpuTempPeak: nil, gpuTempAvg: nil,
             fanRpmPeak: nil, fanRpmAvg: nil,
-            cpuMinutesAboveThreshold: 0
+            cpuSecondsAboveThreshold: 0
         )
     }
 }
