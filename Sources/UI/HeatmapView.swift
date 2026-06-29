@@ -17,6 +17,7 @@ struct HeatmapView: View {
     @State private var sampleIntervalSec: Int = 60
     @State private var loading: Bool = false
     @State private var selected: DayCell?
+    @State private var lastHeatmapRefresh: Date = .distantPast
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -28,6 +29,10 @@ struct HeatmapView: View {
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onAppear(perform: load)
+        .onReceive(NotificationCenter.default.publisher(
+            for: Sampler.newSampleNotification)) { _ in
+            refreshForNewSample()
+        }
     }
 
     // MARK: - Header
@@ -158,6 +163,7 @@ struct HeatmapView: View {
 
     private func load() {
         loading = true
+        lastHeatmapRefresh = Date()
         let selectedWeeks = weeks
         DispatchQueue.global(qos: .userInitiated).async {
             let now = Date()
@@ -178,6 +184,13 @@ struct HeatmapView: View {
                 self.loading = false
             }
         }
+    }
+
+    private func refreshForNewSample() {
+        guard !loading else { return }
+        let now = Date()
+        guard now.timeIntervalSince(lastHeatmapRefresh) >= 600 else { return }
+        load()
     }
 
     private static func heatmapStartDate(weeks: Int, now: Date = Date()) -> Date {

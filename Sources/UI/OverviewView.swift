@@ -26,6 +26,9 @@ struct OverviewView: View {
     @State private var latestSample: Sample?
     @State private var dustRisk: DustRiskAssessment?
     @State private var showDustRiskDetails = false
+    @State private var lastTodayRefresh: Date = .distantPast
+    @State private var lastTrendRefresh: Date = .distantPast
+    @State private var lastRiskRefresh: Date = .distantPast
     @ObservedObject private var samplerObserver = SamplerObserver()
 
     /// Dashboard-wide series visibility. Stored in UserDefaults so toggles
@@ -54,10 +57,7 @@ struct OverviewView: View {
             for: Sampler.newSampleNotification)) { note in
             if let s = note.userInfo?[Sampler.sampleKey] as? Sample {
                 latestSample = s
-                // Light refresh: only re-fetch the small "today" summary,
-                // not the whole 7-day window. That keeps the live view
-                // responsive at 1 sample/min.
-                refreshTodayOnly()
+                refreshForNewSample()
             }
         }
     }
@@ -829,8 +829,28 @@ struct OverviewView: View {
                 self.todayHotDurations = hotDurations
                 self.last7Days = daily
                 self.dustRisk = risk
+                let now = Date()
+                self.lastTodayRefresh = now
+                self.lastTrendRefresh = now
+                self.lastRiskRefresh = now
                 self.loading = false
             }
+        }
+    }
+
+    private func refreshForNewSample() {
+        let now = Date()
+        if now.timeIntervalSince(lastTodayRefresh) >= 30 {
+            lastTodayRefresh = now
+            refreshTodayOnly()
+        }
+
+        let shouldRefreshTrends = now.timeIntervalSince(lastTrendRefresh) >= 300
+        let shouldRefreshRisk = now.timeIntervalSince(lastRiskRefresh) >= 900
+        if shouldRefreshTrends || shouldRefreshRisk {
+            lastTrendRefresh = now
+            if shouldRefreshRisk { lastRiskRefresh = now }
+            refreshOverviewTrends(refreshRisk: shouldRefreshRisk)
         }
     }
 
@@ -852,6 +872,37 @@ struct OverviewView: View {
             DispatchQueue.main.async {
                 if let today = today { self.todayStats = today }
                 if let hotDurations = hotDurations { self.todayHotDurations = hotDurations }
+            }
+        }
+    }
+
+    /// Medium-weight refresh for charts that should stay current while the
+    /// Overview tab is left open. Risk assessment is intentionally refreshed
+    /// less often because it scans a larger raw-sample window.
+    private func refreshOverviewTrends(refreshRisk: Bool) {
+        DispatchQueue.global(qos: .utility).async {
+            let cal = Calendar.current
+            let now = Date()
+            let startOfToday = cal.startOfDay(for: now)
+            let sevenDaysAgo = cal.date(byAdding: .day, value: -7, to: startOfToday)!
+            let db = Sampler.shared.databaseHandle
+
+            let hourly = (try? db.fetchHourlyStats(
+                from: Int64(cal.date(byAdding: .day, value: -1, to: now)!.timeIntervalSince1970),
+                to:   Int64(now.timeIntervalSince1970))) ?? []
+            let daily = (try? db.fetchDailyStats(
+                from: Int64(sevenDaysAgo.timeIntervalSince1970),
+                to:   Int64(now.timeIntervalSince1970))) ?? []
+            let risk: DustRiskAssessment? = {
+                guard refreshRisk else { return nil }
+                let cfg = (try? db.loadConfig()) ?? Config()
+                return try? BaselineComparator.assessDustRisk(database: db, config: cfg)
+            }()
+
+            DispatchQueue.main.async {
+                self.hourly = hourly
+                self.last7Days = daily
+                if let risk { self.dustRisk = risk }
             }
         }
     }

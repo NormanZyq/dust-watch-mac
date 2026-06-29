@@ -67,6 +67,9 @@ struct ChartsView: View {
     @State private var exportError: String?
     @State private var exportedURL: URL?
     @State private var loadRequestID = UUID()
+    @State private var lastLiveFullReload: Date = .distantPast
+    @State private var lastHistoryReload: Date = .distantPast
+    @State private var lastCompareReload: Date = .distantPast
 
     /// Dashboard-wide series visibility. Stored in UserDefaults so toggles
     /// survive tab switches and the next app launch.
@@ -89,6 +92,11 @@ struct ChartsView: View {
         .onAppear(perform: load)
         .onChange(of: range)        { _ in load() }
         .onChange(of: aggregation)  { _ in load() }
+        .onReceive(NotificationCenter.default.publisher(
+            for: Sampler.newSampleNotification)) { note in
+            guard let sample = note.userInfo?[Sampler.sampleKey] as? Sample else { return }
+            refreshForNewSample(sample)
+        }
         .alert(L("Export failed"),
                isPresented: Binding(get: { exportError != nil },
                                     set: { if !$0 { exportError = nil } })) {
@@ -1096,6 +1104,39 @@ struct ChartsView: View {
 
     // MARK: - Data loading
 
+    private func refreshForNewSample(_ sample: Sample) {
+        let now = Date()
+        switch mode {
+        case .live:
+            appendLiveSample(sample)
+            if now.timeIntervalSince(lastLiveFullReload) >= 300 {
+                lastLiveFullReload = now
+                load()
+            }
+        case .history:
+            if aggregation == .raw {
+                appendLiveSample(sample)
+            }
+            if now.timeIntervalSince(lastHistoryReload) >= 300 {
+                lastHistoryReload = now
+                load()
+            }
+        case .compare:
+            if now.timeIntervalSince(lastCompareReload) >= 900 {
+                lastCompareReload = now
+                load()
+            }
+        }
+    }
+
+    private func appendLiveSample(_ sample: Sample) {
+        if samples.contains(where: { $0.id == sample.id }) { return }
+        samples.append(sample)
+        let cutoffInterval: TimeInterval = mode == .live ? 24 * 3600 : range.seconds
+        let cutoff = Date().addingTimeInterval(-cutoffInterval)
+        samples.removeAll { $0.timestamp < cutoff }
+    }
+
     private func load() {
         loading = true
         let requestID = UUID()
@@ -1146,6 +1187,15 @@ struct ChartsView: View {
                 self.daily = daily
                 self.coolingTrend = []
                 self.finding = finding
+                let now = Date()
+                switch requestedMode {
+                case .live:
+                    self.lastLiveFullReload = now
+                case .history:
+                    self.lastHistoryReload = now
+                case .compare:
+                    self.lastCompareReload = now
+                }
                 self.loading = false
             }
 
