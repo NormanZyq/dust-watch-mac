@@ -1,225 +1,194 @@
 # DustWatch
 
-A menu-bar utility that quietly records CPU/GPU temperature, fan RPM, and
-load on your Mac, then alerts you when long-term trends suggest your
-machine's cooling has degraded (typically: dust in the vents).
+[中文说明](README.zh-CN.md)
 
-- **Background** — one sample per minute, runs as an accessory app (no Dock icon)
-- **Long-term** — months of data rolled up automatically, queryable instantly
-- **Visual** — SwiftUI Charts line charts in the dashboard window
-- **Alerting** — system notifications + menu-bar red icon when a recent
-  temperature window sits significantly above the historical baseline at
-  the same CPU frequency
+DustWatch is a macOS menu bar app for tracking thermal behavior over time. It
+records CPU/GPU temperature, fan RPM, and workload, then uses the history to
+surface possible cooling degradation such as dust buildup.
 
-> Personal utility, not App Store material. The app does **not** enable
-> App Sandbox because macOS's SMC interface is unavailable to sandboxed
-> processes.
+The app is useful for two groups:
+
+- Users who want a quiet background monitor and a clear "do I need to clean my
+  Mac?" signal.
+- Developers who want a small SwiftUI/AppKit/SQLite project for local sensor
+  collection, charting, and thermal-risk analysis.
+
+DustWatch is still beta software. The sensor and risk model are practical, but
+the dust-risk algorithm has not been validated across enough machines, rooms,
+seasons, workloads, and cooling designs. User reports, counterexamples, data
+analysis, and implementation ideas are welcome.
 
 ## Requirements
 
-- macOS 13.0 (Ventura) or later
-- Apple Silicon (M1 / M2 / M3 / M4) for full SMC sensor support
-- Intel Macs are built by the release workflow, with legacy SMC decoding
-  retained on a best-effort basis
-- Xcode command-line tools (`xcode-select --install`) — for the Swift toolchain
-  and the `codesign` tool
+- macOS 13 Ventura or later
+- Apple Silicon is the primary target
+- Intel builds are produced by the release workflow, but sensor decoding is
+  best effort
+- No Apple Developer account is needed for local builds
+- Xcode command-line tools are enough for building from source
 
-You do **not** need:
+DustWatch does not use App Sandbox. Reading SMC sensors requires private macOS
+interfaces that are unavailable to sandboxed apps.
 
-- Xcode itself
-- An Apple Developer account
-- Any third-party package (everything is system frameworks: SwiftUI, AppKit,
-  Charts, IOKit, UserNotifications, libsqlite3)
+## Install
 
-## Build & install
+The easiest path is to download the latest DMG from GitHub Releases:
+
+<https://github.com/NormanZyq/dust-watch-mac/releases>
+
+Open the DMG, drag `DustWatch.app` to `/Applications`, then launch it. Current
+beta builds are ad-hoc signed, so macOS may block the first launch. If that
+happens, open **System Settings > Privacy & Security** and choose **Open
+Anyway** for DustWatch.
+
+On launch, DustWatch opens the dashboard and keeps a menu bar icon running in
+the background. The default sample interval is 60 seconds.
+
+## Daily Use
+
+- **Overview** shows today's peaks, recent trends, and the current dust-risk
+  level.
+- **Live** shows recent raw samples.
+- **History** shows 24h, 7d, 30d, 90d, or all data with raw/hourly/daily
+  aggregation and CSV export.
+- **Heatmap** shows daily thermal intensity over weeks or months.
+- **Compare** shows the current cooling-loss comparison when the model has
+  enough evidence.
+- **Settings** changes sampling, alert thresholds, the recent analysis window,
+  notifications, demo data, and cooling-reference calibration.
+
+Settings are saved immediately. The calibration button should be used only when
+the machine is known to be thermally healthy, for example right after cleaning
+dust. Resetting calibration keeps existing samples and returns the model to
+automatic reference learning.
+
+If SMC readings do not work on your macOS version, enable demo mode in Settings
+or from the menu bar. Demo mode generates realistic synthetic data so the UI,
+charts, and risk model can still be explored.
+
+## Dust-Risk Model
+
+The current model is no longer based on a user-selected "baseline window".
+Instead, it tries to learn the best stable cooling capacity it has observed in
+historical raw samples, then compares the recent window against that reference.
+
+At a high level:
+
+1. Samples are grouped by similar workload. CPU and GPU are analyzed separately.
+2. For each load bucket, the model keeps a robust low-temperature stable slice
+   as the best observed cooling reference.
+3. When idle samples are available, it compares temperature rise above idle
+   rather than absolute temperature. This helps reduce false positives from room
+   temperature changes.
+4. It uses a Mann-Whitney U test to compare recent and reference distributions.
+5. Fan RPM at the same load is used as supporting evidence.
+6. A cleaning recommendation requires enough reference data and corroboration
+   across multiple recent days or multiple load buckets.
+
+The Overview risk levels are intentionally conservative:
+
+- **Insufficient data** means DustWatch needs more history. Keep the app running
+  in the background; sampling is lightweight.
+- **None** means no statistically meaningful cooling-capacity drop was found.
+- **Minor / elevated** means the model sees a signal, but not enough
+  corroboration for a cleaning recommendation.
+- **Needs cleaning** means the model found a stronger, repeated signal versus
+  the best cooling reference.
+
+This algorithm is experimental. It can still be confused by major ambient
+temperature changes, unusual workloads, bad or missing sensors, cooling-pad
+changes, firmware behavior, and short histories. Good future work includes
+better ambient estimation, model confidence reporting, larger real-world test
+datasets, and machine-specific tuning.
+
+## Data and Privacy
+
+All data stays local. DustWatch has no telemetry service.
+
+Database path:
 
 ```sh
-cd dustwatch-mac
+~/Library/Application Support/DustWatch/data.db
+```
+
+It is a SQLite database:
+
+| Table | Purpose | Retention |
+| --- | --- | --- |
+| `samples` | Raw sensor readings | About one year plus the recent window |
+| `samples_hourly` | Hourly rollups | Up to one year |
+| `samples_daily` | Daily rollups | Kept indefinitely |
+| `alerts` | Local notification throttle history | Kept indefinitely |
+| `config` | User settings | Single row |
+
+Inspect recent rows:
+
+```sh
+sqlite3 ~/Library/Application\ Support/DustWatch/data.db \
+  "SELECT datetime(ts, 'unixepoch'), cpu_temp, gpu_temp, fan_max FROM samples ORDER BY ts DESC LIMIT 10;"
+```
+
+## Build From Source
+
+```sh
+git clone https://github.com/NormanZyq/dust-watch-mac.git
+cd dust-watch-mac
 ./build.sh
 cp -R build/DustWatch.app /Applications/
 ```
 
-`build.sh` does three things:
-
-1. `swift build -c release` compiles the binary
-2. Assembles `DustWatch.app` (Info.plist + entitlements + binary)
-3. Ad-hoc code-signs the bundle
-
-To rebuild from scratch:
+Useful commands:
 
 ```sh
-./build.sh clean && ./build.sh
+swift test
+./build.sh debug
+./build.sh clean
+./build.sh --arch arm64
+./build.sh --arch x86_64
 ```
 
-## First launch
+`build.sh` compiles the Swift package, assembles `DustWatch.app`, copies the
+Info.plist, localized resources, icon, entitlements, and ad-hoc signs the app.
 
-macOS Gatekeeper will refuse to open the app the first time because
-it's signed with an ad-hoc identity. To approve it:
+## Project Layout
 
-1. Open `DustWatch.app` from Finder
-2. macOS shows "cannot be opened because the developer cannot be verified"
-3. Open **System Settings → Privacy & Security**, scroll down, click
-   **Open Anyway** next to the DustWatch entry
-4. Click **Open** in the confirmation dialog
-
-After that, the app launches normally.
-
-When the popover appears, click **Open Dashboard** to see the charts.
-
-## Data storage
-
+```text
+Sources/
+  App/             App entry point and AppDelegate
+  SMC/             SMC and system sensor reading
+  Sampler/         Periodic sampling loop
+  Storage/         SQLite schema, queries, rollups, migrations
+  Analysis/        Cooling-reference and dust-risk logic
+  Notifications/   Local notification wrapper
+  UI/              Menu bar, dashboard, charts, settings
+  Resources/       Info.plist, entitlements, icons, localization
+Tests/             XCTest coverage for migrations and risk logic
+build.sh           SwiftPM build, app bundle assembly, ad-hoc signing
 ```
-~/Library/Application Support/DustWatch/data.db
-```
-
-A standard SQLite file. You can open it with `sqlite3` to inspect:
-
-```sh
-sqlite3 ~/Library/Application\ Support/DustWatch/data.db \
-  "SELECT datetime(ts, 'unixepoch'), cpu_temp, fan_max FROM samples ORDER BY ts DESC LIMIT 10;"
-```
-
-Schema:
-
-| Table | Purpose | Retention |
-|---|---|---|
-| `samples` | Raw 1-minute readings | 30 days |
-| `samples_hourly` | Rolled up to per-hour aggregates | 1 year |
-| `samples_daily` | Rolled up to per-day aggregates | forever |
-| `alerts` | Notification log (for throttle) | forever |
-| `config` | User settings (single row) | forever |
-
-Aggregation runs after every sample write. Old data is automatically moved
-to the more compact tables; you can leave the app running for years
-without filling your disk.
-
-## Settings
-
-Open the dashboard window → **Settings** tab. Everything is saved to
-the database immediately.
-
-| Setting | Default | What it does |
-|---|---|---|
-| Interval | 60 sec | Time between samples |
-| Temperature threshold | 3.0 °C | How much hotter the recent window must be (vs. baseline) to trigger an alert |
-| Fan RPM threshold | 500 RPM | Alternative evidence: how much faster fans must spin |
-| Baseline window | 60 days | The "old normal" period |
-| Recent window | 7 days | The "what's happening now" period |
-| Notifications | on | System banners and the menu-bar red icon |
-
-## How the alert works
-
-Every 6 hours the app:
-
-1. Splits samples into baseline (60 days ago to 7 days ago) and recent
-   (last 7 days).
-2. Groups by CPU P-State (a qualitative "how hard is the CPU running"
-   index, not absolute GHz).
-3. For each P-State bucket, runs a Mann-Whitney U test on the temperature
-   distributions.
-4. If the test is significant (p < 0.05) **and** the median temperature
-   rise is at least your threshold, the bucket is a candidate.
-5. The same test is also run on fan RPM (rising RPM at the same load is
-   alternative evidence of degraded cooling).
-6. The worst bucket triggers a single notification, throttled to once
-   per 7 days.
-
-The notification opens the **Compare** tab in the dashboard, which shows
-a bar chart of the baseline vs. recent medians at the affected P-State.
-
-## Dashboard UI
-
-When the user opens the main window (menu-bar icon → "Open Dashboard",
-or the global hot key **⇧⌘T**), they see a 6-tab window:
-
-- **Overview** (default landing tab)
-  - 4 stat cards: today's CPU peak, GPU peak, fan peak, minutes above 70°C
-  - Each card shows delta vs yesterday (▲ / ▼ / •)
-  - 24-hour sparkline chart (CPU + GPU average per hour)
-  - 7-day daily-peak bar chart with red threshold reference line
-  - "Thermal degradation detected" banner appears if the analyzer
-    found a significant delta
-- **Live** — 24h raw samples in detail with threshold reference
-- **History** — pick a range (24h / 7d / 30d / 90d / All) and an
-  aggregation (Raw / Hourly / Daily), then export the current view
-  as CSV via the toolbar button
-- **Heatmap** — GitHub-style calendar (13/26/52 weeks) where each
-  square is one day, colored by peak CPU temperature. Hover for
-  details, click for a day-detail popover.
-- **Compare** — bar chart of baseline vs recent median CPU temperature
-  at the most-degraded P-State
-- **Settings** — sample interval, thresholds, comparison windows, notifications
-
-The right-click menu on the menu-bar icon also has:
-- Open Dashboard… (⇧⌘T)
-- Export Last 24 Hours as CSV…
-- Reveal Data File in Finder
-- Quit
 
 ## Releases
 
-`v0.1.2` is a beta release. Pushing a `v*` tag to GitHub runs
-the release workflow and uploads two DMG artifacts. Each DMG contains
-`DustWatch.app` and an `Applications` shortcut for drag-and-drop install:
+Pushing a `v*` tag runs the GitHub Actions release workflow. It builds arm64 and
+x86_64 DMGs and publishes a prerelease with generated release notes.
 
-- `DustWatch-v0.1.2-x86_64.dmg`
-- `DustWatch-v0.1.2-arm64.dmg`
-
-On first launch, DustWatch also checks for data from the pre-rename
-`CleanNotificationMac` app support directory. If found, it copies that
-database into the new `DustWatch` directory and merges any samples that
-were written by an earlier DustWatch beta launch.
-
-## Caveats
-
-- **GPU frequency on Apple Silicon** is not exposed by SMC. The app
-  records GPU temperature and an approximate GPU load, but no per-sample
-  GPU frequency. The P-State bucketing for the alert uses CPU P-State
-  only.
-- **First month**: no alerts will fire for the first ~30 days because
-  the baseline period needs data. The **Live** tab still works.
-- **Ad-hoc signing**: if you move the app to another machine, you'll
-  need to re-run Gatekeeper approval there.
-- **SMC read status on macOS 26 (Tahoe)**: Apple removed the user-space
-  `AppleSMC.framework` that older tools depended on. The app falls back
-  to direct `IOConnectCallStructMethod` calls against the IOAppleSMC
-  kext, using a struct layout reverse-engineered from Macs Fan Control.
-  On macOS 26 the kext returns kIOReturnSuccess but the data buffer
-  echoes a fixed byte (0x84) for every key, so the **SMCReader
-  self-test detects this and disables SMC reads for the session**.
-  CPU and GPU load (from `host_processor_info` and a busy-loop proxy)
-  still work, and the SQLite store, charts, and alert logic all
-  function correctly. To get SMC sensors working, the exact field
-  offsets in the 80-byte struct need further reverse engineering
-  against this specific macOS version's kext — that's left as a
-  follow-up.
-
-## Project layout
-
+```sh
+git tag -a v0.x.y -m "v0.x.y"
+git push origin main v0.x.y
 ```
-dustwatch-mac/
-├── Package.swift              SPM manifest
-├── build.sh                   Build + bundle + ad-hoc sign
-├── Sources/
-│   ├── App/                   Entry point & AppDelegate
-│   ├── SMC/                   IOKit → AppleSMC interface
-│   ├── Storage/               SQLite layer + auto-aggregation
-│   ├── Sampler/               1-min timer loop
-│   ├── Analysis/              Mann-Whitney U thermal-degradation detector
-│   ├── Notifications/         UNUserNotificationCenter wrapper
-│   ├── UI/                    Menu bar, popover, main window, charts
-│   │   ├── MenuBarController.swift
-│   │   ├── PopoverView.swift
-│   │   ├── MainWindowView.swift
-│   │   ├── OverviewView.swift        ← at-a-glance dashboard
-│   │   ├── ChartsView.swift          ← live + history + compare
-│   │   ├── HeatmapView.swift         ← calendar heatmap
-│   │   ├── ConfigView.swift
-│   │   ├── CSVExporter.swift
-│   │   └── HotKeyManager.swift
-│   └── Resources/             Info.plist + entitlements (build-time only)
-└── README.md
-```
+
+## Contributing
+
+The most valuable contributions right now are practical validation and model
+improvements:
+
+- Real-world cases where the risk level is wrong
+- Ideas for distinguishing dust from ambient temperature or workload changes
+- Better test fixtures and simulations
+- Sensor decoding fixes for specific macOS or hardware versions
+- UI improvements that make the risk explanation clearer
+
+Please include the macOS version, Mac model, whether the machine was recently
+cleaned, and enough workload context to make thermal changes interpretable.
 
 ## License
 
@@ -227,8 +196,6 @@ MIT. See [LICENSE](LICENSE).
 
 ## Acknowledgements
 
-The SMC reading layer follows the same approach as
-[beltex/SMCKit](https://github.com/beltex/SMCKit) and the
-[smc-fan-control](https://github.com/hholtmann/smcFanControl) family of
-utilities — community-documented bindings to Apple's private
-`AppleSMC.kext` interface.
+The SMC reading layer follows the same general community-documented approach as
+SMCKit and the smcFanControl family of tools. Apple does not provide a stable
+public SMC API for this use case, so this area may need ongoing maintenance.
