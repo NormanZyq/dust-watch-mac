@@ -57,6 +57,23 @@ the background. The default sample interval is 60 seconds.
 - **Settings** changes sampling, alert thresholds, the recent analysis window,
   notifications, demo data, and cooling-reference calibration.
 
+The Overview tab is the default landing page. It keeps the current dust-risk
+state visible above the daily temperature and fan cards, then continues into the
+24-hour and 7-day trend charts.
+
+![DustWatch overview dashboard](<screenshots/1. dashboard-overview.png>)
+
+The History tab is for exploration. It supports raw, hourly, and daily views,
+shows temperature, fan, and cooling-loss series together, and exposes exact
+values on hover.
+
+![History tab with daily aggregation and hover details](<screenshots/2-2. history-panel-without-risk-purple-line.png>)
+
+With longer demo or real histories, the purple cooling-loss trend makes it
+easier to see how the risk model's signal moves over time.
+
+![History tab showing a 30-day cooling-loss trend](<screenshots/3-2. demo-data-history-with-risk-purple-line.png>)
+
 Settings are saved immediately. The calibration button should be used only when
 the machine is known to be thermally healthy, for example right after cleaning
 dust. Resetting calibration keeps existing samples and returns the model to
@@ -94,6 +111,16 @@ The Overview risk levels are intentionally conservative:
   corroboration for a cleaning recommendation.
 - **Needs cleaning** means the model found a stronger, repeated signal versus
   the best cooling reference.
+
+The risk banner includes an explanation popover, so the app can show why it
+thinks the current state is safe or risky instead of only showing a color.
+
+![Dust-risk explanation popover for a no-risk state](<screenshots/2-1. dashboard-overview-expanded-detail-explaining-why-there-is-no-risk.png>)
+
+Synthetic demo data can also be used to inspect the high-risk path without
+waiting for a real machine to degrade.
+
+![Demo data showing a cleaning recommendation and supporting evidence](<screenshots/3-1. demo-data-overview-expanded-with-risk.png>)
 
 This algorithm is experimental. It can still be confused by major ambient
 temperature changes, unusual workloads, bad or missing sensors, cooling-pad
@@ -169,7 +196,9 @@ build.sh           SwiftPM build, app bundle assembly, ad-hoc signing
 ## Releases
 
 Pushing a `v*` tag runs the GitHub Actions release workflow. It builds arm64 and
-x86_64 DMGs and publishes a prerelease with generated release notes.
+x86_64 DMGs and publishes a GitHub Release with generated release notes. `v0.*`
+tags are marked as prereleases; `v1.*` and later are published as stable
+releases.
 
 ```sh
 git tag -a v0.x.y -m "v0.x.y"
